@@ -1,19 +1,19 @@
 import sys
 import os
-
-os.makedirs("admin", exist_ok=True)
-os.makedirs("database", exist_ok=True)
+import ssl
 import json
 import sqlite3
 import threading
 import socket
-import time
 import hashlib
 from datetime import datetime
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from crypto import CryptoManager
+
+os.makedirs("admin", exist_ok=True)
+os.makedirs("database", exist_ok=True)
 
 
 def get_local_ip():
@@ -35,6 +35,34 @@ def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 
+def generate_self_signed_cert():
+    from cryptography import x509
+    from cryptography.x509.oid import NameOID
+    from cryptography.hazmat.primitives import hashes, serialization
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    import datetime
+
+    key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = issuer = x509.Name([
+        x509.NameAttribute(NameOID.COUNTRY_NAME, "RU"),
+        x509.NameAttribute(NameOID.STATE_OR_PROVINCE_NAME, "Moscow"),
+        x509.NameAttribute(NameOID.LOCALITY_NAME, "Moscow"),
+        x509.NameAttribute(NameOID.ORGANIZATION_NAME, "Asterion"),
+        x509.NameAttribute(NameOID.COMMON_NAME, "localhost"),
+    ])
+    cert = x509.CertificateBuilder().subject_name(subject).issuer_name(issuer).public_key(
+        key.public_key()).serial_number(x509.random_serial_number()).not_valid_before(
+        datetime.datetime.now(datetime.UTC)).not_valid_after(
+        datetime.datetime.now(datetime.UTC) + datetime.timedelta(days=3650)).add_extension(
+        x509.SubjectAlternativeName([x509.DNSName("localhost")]), critical=False).sign(key, hashes.SHA256())
+
+    with open("admin/server.crt", "wb") as f:
+        f.write(cert.public_bytes(serialization.Encoding.PEM))
+    with open("admin/server.key", "wb") as f:
+        f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                  serialization.NoEncryption()))
+
+
 crypto = CryptoManager()
 
 
@@ -45,6 +73,7 @@ class DatabaseManager:
         self.cursor.execute('''
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_type TEXT,
                 from_user TEXT,
                 to_user TEXT,
                 message TEXT,
@@ -53,57 +82,62 @@ class DatabaseManager:
         ''')
         self.conn.commit()
 
-    def save_message(self, from_user, to_user, message):
+    def save_message(self, chat_type, from_user, to_user, encrypted_message):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        encrypted = crypto.encrypt_message(message)
         self.cursor.execute(
-            "INSERT INTO messages (from_user, to_user, message, timestamp) VALUES (?, ?, ?, ?)",
-            (from_user, to_user, encrypted, timestamp)
+            "INSERT INTO messages (chat_type, from_user, to_user, message, timestamp) VALUES (?, ?, ?, ?, ?)",
+            (chat_type, from_user, to_user, encrypted_message, timestamp)
         )
         self.conn.commit()
         return timestamp
 
-    def get_messages(self, to_user=None):
-        if to_user:
-            self.cursor.execute(
-                "SELECT from_user, message, timestamp FROM messages WHERE to_user=? OR to_user='all' ORDER BY timestamp",
-                (to_user,)
-            )
-        else:
-            self.cursor.execute(
-                "SELECT from_user, message, timestamp FROM messages WHERE to_user='all' ORDER BY timestamp")
+    def get_general_messages(self):
+        self.cursor.execute(
+            "SELECT from_user, to_user, message, timestamp FROM messages WHERE chat_type='general' ORDER BY timestamp"
+        )
         return self.cursor.fetchall()
 
     def get_private_messages(self, user1, user2):
         self.cursor.execute(
-            """SELECT from_user, message, timestamp FROM messages 
-               WHERE (to_user=? AND from_user=?) OR (to_user=? AND from_user=?) 
+            """SELECT from_user, to_user, message, timestamp FROM messages 
+               WHERE chat_type='private' AND ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?))
                ORDER BY timestamp""",
-            (user2, user1, user1, user2)
+            (user1, user2, user2, user1)
         )
         return self.cursor.fetchall()
 
     def get_all_messages_for_user(self, username):
         self.cursor.execute(
-            """SELECT from_user, message, timestamp FROM messages 
-               WHERE to_user=? OR to_user='all' OR from_user=?
+            """SELECT chat_type, from_user, to_user, message, timestamp FROM messages 
+               WHERE chat_type='general' OR (chat_type='private' AND (to_user=? OR from_user=?))
                ORDER BY timestamp""",
             (username, username)
         )
         return self.cursor.fetchall()
 
-    def get_all_messages(self):
+    def get_all_general_messages(self):
         self.cursor.execute(
-            "SELECT from_user, message, timestamp FROM messages ORDER BY timestamp"
+            "SELECT from_user, to_user, message, timestamp FROM messages WHERE chat_type='general' ORDER BY timestamp"
         )
         return self.cursor.fetchall()
+
+    def get_all_users_with_private_chat(self):
+        self.cursor.execute(
+            """SELECT DISTINCT from_user FROM messages 
+               WHERE chat_type='private' AND to_user='Director' AND from_user != 'Director'
+               UNION
+               SELECT DISTINCT to_user FROM messages 
+               WHERE chat_type='private' AND from_user='Director' AND to_user != 'Director'
+               ORDER BY from_user"""
+        )
+        return [row[0] for row in self.cursor.fetchall()]
 
 
 db = DatabaseManager()
 
 
 class ServerThread(QThread):
-    message_received = pyqtSignal(str, str, str)
+    message_received = pyqtSignal(str, str, str, str)
     screen_received = pyqtSignal(str, str)
     user_connected = pyqtSignal(str)
     user_disconnected = pyqtSignal(str)
@@ -117,15 +151,22 @@ class ServerThread(QThread):
         self.server_password_hash = hash_password(server_password)
 
     def run(self):
+        if not os.path.exists("admin/server.crt") or not os.path.exists("admin/server.key"):
+            generate_self_signed_cert()
+
         self.server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.server.bind(('0.0.0.0', self.port))
         self.server.listen(10)
         self.server.settimeout(1.0)
 
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain("admin/server.crt", "admin/server.key")
+        self.ssl_server = context.wrap_socket(self.server, server_side=True)
+
         while self.running:
             try:
-                client_socket, addr = self.server.accept()
+                client_socket, addr = self.ssl_server.accept()
 
                 auth_data = client_socket.recv(1024).decode()
                 try:
@@ -175,28 +216,33 @@ class ServerThread(QThread):
                     if packet_type == 'message':
                         to_user = packet.get('to')
                         message = packet.get('message')
-                        db.save_message(username, to_user, message)
-                        self.message_received.emit(username, message, to_user)
+                        encrypted = crypto.encrypt_message(message)
 
-                        if to_user == 'all':
+                        if to_user == 'general':
+                            db.save_message('general', username, 'general', encrypted)
+                            self.message_received.emit(username, encrypted, to_user, 'general')
+                            decrypted = crypto.decrypt_message(encrypted)
                             for user, info in self.clients.items():
                                 if user != username:
                                     try:
                                         info['socket'].send(json.dumps({
                                             'type': 'message',
                                             'from': username,
-                                            'message': message,
-                                            'to': 'all'
+                                            'message': decrypted,
+                                            'to': 'general'
                                         }).encode())
                                     except:
                                         pass
                         else:
+                            db.save_message('private', username, to_user, encrypted)
+                            self.message_received.emit(username, encrypted, to_user, 'private')
                             if to_user in self.clients:
+                                decrypted = crypto.decrypt_message(encrypted)
                                 try:
                                     self.clients[to_user]['socket'].send(json.dumps({
                                         'type': 'message',
                                         'from': username,
-                                        'message': message,
+                                        'message': decrypted,
                                         'to': to_user
                                     }).encode())
                                 except:
@@ -206,14 +252,6 @@ class ServerThread(QThread):
                         to_user = packet.get('to')
                         screen_data = packet.get('data')
                         self.screen_received.emit(username, screen_data)
-
-                    elif packet_type == 'decrypt_request':
-                        encrypted_msg = packet.get('message')
-                        decrypted = crypto.decrypt_message(encrypted_msg)
-                        client_socket.send(json.dumps({
-                            'type': 'decrypt_response',
-                            'message': decrypted
-                        }).encode())
 
                 except json.JSONDecodeError:
                     pass
@@ -244,21 +282,19 @@ class ServerThread(QThread):
             try:
                 history = db.get_all_messages_for_user(username)
                 history_data = []
-                for from_user, msg, ts in history:
-                    if from_user == 'Director' or from_user == username:
-                        try:
-                            decrypted = crypto.decrypt_message(msg)
-                            history_data.append({
-                                'from': from_user,
-                                'message': decrypted,
-                                'timestamp': ts
-                            })
-                        except:
-                            history_data.append({
-                                'from': from_user,
-                                'message': '[Зашифровано]',
-                                'timestamp': ts
-                            })
+                for chat_type, from_user, to_user, msg, ts in history:
+                    decrypted = crypto.decrypt_message(msg)
+                    if chat_type == 'general':
+                        target = 'general'
+                    else:
+                        target = to_user if from_user != username else from_user
+                    history_data.append({
+                        'chat_type': chat_type,
+                        'from': from_user,
+                        'to': target,
+                        'message': decrypted,
+                        'timestamp': ts
+                    })
 
                 if history_data:
                     self.clients[username]['socket'].send(json.dumps({
@@ -275,6 +311,10 @@ class ServerThread(QThread):
                 client['socket'].close()
             except:
                 pass
+        try:
+            self.ssl_server.close()
+        except:
+            pass
         self.server.close()
 
 
@@ -442,11 +482,29 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.server_password = server_password
         self.server_thread = None
-        self.current_chat = "all"
+        self.current_chat = "general"
         self.screen_windows = {}
+        self.private_chats = {}
         self.init_ui()
-        self.load_all_history()
+        self.load_general_history()
+        self.load_private_chats()
         self.start_server()
+
+    def load_private_chats(self):
+        users = db.get_all_users_with_private_chat()
+        for username in users:
+            chat_widget = self.create_chat_widget()
+            self.chat_tabs.addTab(chat_widget, username)
+            self.private_chats[username] = chat_widget
+
+            history = db.get_private_messages("Director", username)
+            for from_user, to_user, msg, ts in history:
+                try:
+                    decrypted = crypto.decrypt_message(msg)
+                    display_name = "Я" if from_user == "Director" else from_user
+                    chat_widget.chat_display.append(f"[{ts}] {display_name}: {decrypted}")
+                except:
+                    chat_widget.chat_display.append(f"[{ts}] {from_user}: [Зашифровано]")
 
     def init_ui(self):
         self.setWindowTitle("Asterion - Директор")
@@ -561,11 +619,9 @@ class MainWindow(QMainWindow):
         right_layout.addWidget(self.chat_tabs)
         main_layout.addWidget(right_panel)
 
-        self.private_chats = {}
-
-    def load_all_history(self):
-        all_messages = db.get_all_messages()
-        for from_user, msg, ts in all_messages:
+    def load_general_history(self):
+        all_messages = db.get_all_general_messages()
+        for from_user, to_user, msg, ts in all_messages:
             try:
                 decrypted = crypto.decrypt_message(msg)
                 if from_user == "Director":
@@ -670,7 +726,7 @@ class MainWindow(QMainWindow):
             self.private_chats[username] = chat_widget
 
             history = db.get_private_messages("Director", username)
-            for from_user, msg, ts in history:
+            for from_user, to_user, msg, ts in history:
                 try:
                     decrypted = crypto.decrypt_message(msg)
                     display_name = "Я" if from_user == "Director" else from_user
@@ -689,18 +745,22 @@ class MainWindow(QMainWindow):
             self.screen_windows[username].close()
             del self.screen_windows[username]
 
-    def on_message_received(self, from_user, message, to_user):
-        try:
-            decrypted = crypto.decrypt_message(message)
-        except:
-            decrypted = "[Зашифровано]"
+    def on_message_received(self, from_user, message, to_user, chat_type):
+        if from_user == "Director":
+            display_message = message
+        else:
+            try:
+                display_message = crypto.decrypt_message(message)
+            except:
+                display_message = "[Decryption error]"
 
-        if to_user == "all":
-            self.general_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {decrypted}")
+        if chat_type == "general":
+            self.general_chat.chat_display.append(
+                f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {display_message}")
         else:
             if from_user in self.private_chats:
                 self.private_chats[from_user].chat_display.append(
-                    f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {decrypted}")
+                    f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {display_message}")
 
     def send_message(self, input_widget):
         message = input_widget.text().strip()
@@ -711,8 +771,8 @@ class MainWindow(QMainWindow):
         tab_text = self.chat_tabs.tabText(self.chat_tabs.currentIndex())
 
         if tab_text == "Общий чат":
-            to_user = "all"
-            db.save_message("Director", "all", message)
+            encrypted = crypto.encrypt_message(message)
+            db.save_message("general", "Director", "general", encrypted)
             self.general_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
 
             for user, info in self.server_thread.clients.items():
@@ -721,14 +781,15 @@ class MainWindow(QMainWindow):
                         'type': 'message',
                         'from': 'Director',
                         'message': message,
-                        'to': 'all'
+                        'to': 'general'
                     }).encode())
                 except:
                     pass
         else:
             to_user = tab_text
             if to_user in self.private_chats:
-                db.save_message("Director", to_user, message)
+                encrypted = crypto.encrypt_message(message)
+                db.save_message("private", "Director", to_user, encrypted)
                 self.private_chats[to_user].chat_display.append(
                     f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
 

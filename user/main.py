@@ -2,13 +2,12 @@ import sys
 import json
 import threading
 import socket
+import ssl
 import time
 from datetime import datetime
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
-from crypto import UserCrypto
-
 
 class AuthThread(QThread):
     auth_success = pyqtSignal()
@@ -32,11 +31,16 @@ class AuthThread(QThread):
 
     def run(self):
         try:
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(10.0)
+            ssl_sock = context.wrap_socket(sock, server_hostname=self.server_ip)
 
             try:
-                sock.connect((self.server_ip, self.port))
+                ssl_sock.connect((self.server_ip, self.port))
             except socket.error as e:
                 self.connection_error.emit(f"Не удалось подключиться к {self.server_ip}:{self.port} - {str(e)}")
                 return
@@ -47,31 +51,30 @@ class AuthThread(QThread):
             })
 
             try:
-                sock.send(auth_data.encode())
+                ssl_sock.send(auth_data.encode())
             except socket.error as e:
                 self.connection_error.emit(f"Не удалось отправить данные авторизации - {str(e)}")
-                sock.close()
+                ssl_sock.close()
                 return
 
             try:
-                response = sock.recv(1024).decode()
+                response = ssl_sock.recv(1024).decode()
                 auth_response = json.loads(response)
 
                 if auth_response.get('status') != 'success':
                     self.auth_failed.emit(auth_response.get('error', 'Неверный пароль'))
-                    sock.close()
+                    ssl_sock.close()
                     return
             except:
                 self.auth_failed.emit("Ошибка авторизации")
-                sock.close()
+                ssl_sock.close()
                 return
 
-            sock.close()
+            ssl_sock.close()
             self.auth_success.emit()
 
         except Exception as e:
             self.connection_error.emit(f"Ошибка подключения: {str(e)}")
-
 
 class ClientThread(QThread):
     message_received = pyqtSignal(str, str, str)
@@ -96,12 +99,16 @@ class ClientThread(QThread):
         self.port = port
         self.socket = None
         self.running = True
-        self.crypto = UserCrypto(server_ip, port)
 
     def run(self):
         try:
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(10.0)
+            context = ssl.create_default_context()
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(10.0)
+            self.socket = context.wrap_socket(sock, server_hostname=self.server_ip)
 
             try:
                 self.socket.connect((self.server_ip, self.port))
@@ -143,13 +150,8 @@ class ClientThread(QThread):
                     if packet_type == 'message':
                         from_user = packet.get('from', 'Неизвестный')
                         message = packet.get('message', '')
-                        to_user = packet.get('to', 'all')
-
-                        if from_user == 'Director':
-                            decrypted = self.crypto.decrypt_message(message)
-                            self.message_received.emit(from_user, decrypted, to_user)
-                        else:
-                            self.message_received.emit(from_user, message, to_user)
+                        to_user = packet.get('to', 'general')
+                        self.message_received.emit(from_user, message, to_user)
 
                     elif packet_type == 'notification':
                         message = packet.get('message', '')
@@ -217,7 +219,6 @@ class ClientThread(QThread):
                 self.socket.close()
             except:
                 pass
-
 
 class LoginDialog(QDialog):
     def __init__(self):
@@ -343,7 +344,6 @@ class LoginDialog(QDialog):
         self.connect_btn.setText("Подключиться")
         QMessageBox.critical(self, "Ошибка подключения",
                              f"Не удалось подключиться:\nПроверьте:\n1. Запущен ли сервер\n2. Правильный IP-адрес\n3. Отключен ли брандмауэр")
-
 
 class MainWindow(QMainWindow):
     def __init__(self, server_ip, username, password):
@@ -517,16 +517,18 @@ class MainWindow(QMainWindow):
     def on_history_received(self, messages):
         for msg in messages:
             from_user = msg.get('from', 'Неизвестный')
+            to_user = msg.get('to', 'general')
             message = msg.get('message', '')
             timestamp = msg.get('timestamp', '')
+            chat_type = msg.get('chat_type', 'general')
 
-            if from_user == 'Director':
-                self.private_chat.chat_display.append(f"[{timestamp}] {from_user}: {message}")
-            else:
+            if chat_type == 'general':
                 self.general_chat.chat_display.append(f"[{timestamp}] {from_user}: {message}")
+            else:
+                self.private_chat.chat_display.append(f"[{timestamp}] {from_user}: {message}")
 
     def on_message_received(self, from_user, message, to_user):
-        if to_user == "all":
+        if to_user == "general":
             self.general_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {message}")
         else:
             self.private_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {message}")
@@ -577,7 +579,7 @@ class MainWindow(QMainWindow):
         tab_text = self.chat_tabs.tabText(self.chat_tabs.currentIndex())
 
         if tab_text == "Общий чат":
-            if self.client_thread.send_message('all', message):
+            if self.client_thread.send_message('general', message):
                 self.general_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
                 input_widget.clear()
         else:
@@ -589,7 +591,6 @@ class MainWindow(QMainWindow):
         event.ignore()
         self.hide()
         self.showMinimized()
-
 
 def main():
     app = QApplication(sys.argv)
@@ -607,6 +608,5 @@ def main():
         sys.exit(app.exec())
     else:
         sys.exit(0)
-
 
 main()
