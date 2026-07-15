@@ -14,6 +14,38 @@ import mss
 import numpy as np
 import cv2
 
+
+def send_packet(sock, packet: dict):
+    data = json.dumps(packet).encode('utf-8')
+    header = len(data).to_bytes(4, byteorder='big')
+    sock.sendall(header + data)
+
+
+class PacketReader:
+
+    def __init__(self):
+        self.buffer = b''
+
+    def feed(self, chunk: bytes):
+        self.buffer += chunk
+
+    def pop_packets(self):
+        packets = []
+        while True:
+            if len(self.buffer) < 4:
+                break
+            length = int.from_bytes(self.buffer[:4], byteorder='big')
+            if len(self.buffer) < 4 + length:
+                break
+            raw = self.buffer[4:4 + length]
+            self.buffer = self.buffer[4 + length:]
+            try:
+                packets.append(json.loads(raw.decode('utf-8')))
+            except json.JSONDecodeError as e:
+                print(f"Повреждённый пакет отброшен: {e}")
+        return packets
+
+
 class AuthThread(QThread):
     auth_success = pyqtSignal()
     auth_failed = pyqtSignal(str)
@@ -50,24 +82,31 @@ class AuthThread(QThread):
                 self.connection_error.emit(f"Не удалось подключиться к {self.server_ip}:{self.port} - {str(e)}")
                 return
 
-            auth_data = json.dumps({
-                'username': self.username,
-                'password': self.password
-            })
-
             try:
-                ssl_sock.send(auth_data.encode())
+                send_packet(ssl_sock, {
+                    'username': self.username,
+                    'password': self.password
+                })
             except socket.error as e:
                 self.connection_error.emit(f"Не удалось отправить данные авторизации - {str(e)}")
                 ssl_sock.close()
                 return
 
             try:
-                response = ssl_sock.recv(1024).decode()
-                auth_response = json.loads(response)
+                reader = PacketReader()
+                auth_response = None
+                while auth_response is None:
+                    chunk = ssl_sock.recv(4096)
+                    if not chunk:
+                        break
+                    reader.feed(chunk)
+                    pkts = reader.pop_packets()
+                    if pkts:
+                        auth_response = pkts[0]
 
-                if auth_response.get('status') != 'success':
-                    self.auth_failed.emit(auth_response.get('error', 'Неверный пароль'))
+                if auth_response is None or auth_response.get('status') != 'success':
+                    error = auth_response.get('error', 'Неверный пароль') if auth_response else 'Ошибка авторизации'
+                    self.auth_failed.emit(error)
                     ssl_sock.close()
                     return
             except:
@@ -108,6 +147,7 @@ class ClientThread(QThread):
         self.socket = None
         self.running = True
         self.download_buffers = {}
+        self.reader = PacketReader()
 
     def run(self):
         try:
@@ -125,23 +165,30 @@ class ClientThread(QThread):
                 self.connection_error.emit(f"Не удалось подключиться к {self.server_ip}:{self.port} - {str(e)}")
                 return
 
-            auth_data = json.dumps({
-                'username': self.username,
-                'password': self.password
-            })
-
             try:
-                self.socket.send(auth_data.encode())
+                send_packet(self.socket, {
+                    'username': self.username,
+                    'password': self.password
+                })
             except socket.error as e:
                 self.connection_error.emit(f"Не удалось отправить данные авторизации - {str(e)}")
                 return
 
             try:
-                response = self.socket.recv(1024).decode()
-                auth_response = json.loads(response)
+                auth_reader = PacketReader()
+                auth_response = None
+                while auth_response is None:
+                    chunk = self.socket.recv(4096)
+                    if not chunk:
+                        break
+                    auth_reader.feed(chunk)
+                    pkts = auth_reader.pop_packets()
+                    if pkts:
+                        auth_response = pkts[0]
 
-                if auth_response.get('status') != 'success':
-                    self.connection_error.emit(auth_response.get('error', 'Неверный пароль'))
+                if auth_response is None or auth_response.get('status') != 'success':
+                    error = auth_response.get('error', 'Неверный пароль') if auth_response else 'Ошибка авторизации'
+                    self.connection_error.emit(error)
                     return
             except:
                 self.connection_error.emit("Ошибка авторизации")
@@ -153,47 +200,47 @@ class ClientThread(QThread):
                     if not data:
                         break
 
-                    packet = json.loads(data.decode())
-                    packet_type = packet.get('type')
+                    self.reader.feed(data)
 
-                    if packet_type == 'message':
-                        from_user = packet.get('from', 'Неизвестный')
-                        message = packet.get('message', '')
-                        to_user = packet.get('to', 'general')
-                        self.message_received.emit(from_user, message, to_user)
+                    for packet in self.reader.pop_packets():
+                        packet_type = packet.get('type')
 
-                    elif packet_type == 'notification':
-                        message = packet.get('message', '')
-                        self.notification_received.emit(message)
+                        if packet_type == 'message':
+                            from_user = packet.get('from', 'Неизвестный')
+                            message = packet.get('message', '')
+                            to_user = packet.get('to', 'general')
+                            self.message_received.emit(from_user, message, to_user)
 
-                    elif packet_type == 'request_screen':
-                        self.screen_requested.emit()
+                        elif packet_type == 'notification':
+                            message = packet.get('message', '')
+                            self.notification_received.emit(message)
 
-                    elif packet_type == 'stop_screen':
-                        self.stop_screen_requested.emit()
+                        elif packet_type == 'request_screen':
+                            self.screen_requested.emit()
 
-                    elif packet_type == 'history':
-                        messages = packet.get('messages', [])
-                        self.history_received.emit(messages)
+                        elif packet_type == 'stop_screen':
+                            self.stop_screen_requested.emit()
 
-                    elif packet_type == 'file_notify':
-                        from_user = packet.get('from')
-                        filename = packet.get('filename')
-                        chat_type = packet.get('chat_type')
-                        filesize = packet.get('filesize')
-                        timestamp = packet.get('timestamp')
-                        self.file_notify_received.emit(from_user, filename, chat_type, filesize, timestamp)
+                        elif packet_type == 'history':
+                            messages = packet.get('messages', [])
+                            self.history_received.emit(messages)
 
-                    elif packet_type == 'file_download_chunk':
-                        file_id = packet.get('file_id')
-                        chunk_index = packet.get('chunk_index')
-                        total_chunks = packet.get('total_chunks')
-                        data_b64 = packet.get('data')
-                        chunk_data = base64.b64decode(data_b64)
-                        self.file_download_chunk_received.emit(file_id, chunk_index, total_chunks, chunk_data)
+                        elif packet_type == 'file_notify':
+                            from_user = packet.get('from')
+                            filename = packet.get('filename')
+                            chat_type = packet.get('chat_type')
+                            filesize = packet.get('filesize')
+                            timestamp = packet.get('timestamp')
+                            self.file_notify_received.emit(from_user, filename, chat_type, filesize, timestamp)
 
-                except json.JSONDecodeError as e:
-                    self.connection_error.emit(f"Ошибка декодирования JSON: {str(e)}")
+                        elif packet_type == 'file_download_chunk':
+                            file_id = packet.get('file_id')
+                            chunk_index = packet.get('chunk_index')
+                            total_chunks = packet.get('total_chunks')
+                            data_b64 = packet.get('data')
+                            chunk_data = base64.b64decode(data_b64)
+                            self.file_download_chunk_received.emit(file_id, chunk_index, total_chunks, chunk_data)
+
                 except socket.timeout:
                     continue
                 except socket.error as e:
@@ -220,7 +267,7 @@ class ClientThread(QThread):
                     'to': to_user,
                     'message': message
                 }
-                self.socket.send(json.dumps(packet).encode())
+                send_packet(self.socket, packet)
                 return True
             except:
                 return False
@@ -234,7 +281,7 @@ class ClientThread(QThread):
                     'to': to_user,
                     'data': screen_data
                 }
-                self.socket.send(json.dumps(packet).encode())
+                send_packet(self.socket, packet)
                 return True
             except:
                 return False
@@ -250,7 +297,7 @@ class ClientThread(QThread):
                     'chat_type': chat_type,
                     'to_user': to_user
                 }
-                self.socket.send(json.dumps(packet).encode())
+                send_packet(self.socket, packet)
                 return True
             except:
                 return False
@@ -576,6 +623,13 @@ class MainWindow(QMainWindow):
         widget.message_input = message_input
         return widget
 
+    def append_chat_line(self, chat_display, line):
+        chat_display.append(line)
+        cursor = chat_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.setCharFormat(QTextCharFormat())
+        chat_display.setTextCursor(cursor)
+
     def on_link_clicked(self, url):
         if self.is_processing_download:
             return
@@ -596,16 +650,17 @@ class MainWindow(QMainWindow):
                     if current_widget:
                         chat_display = current_widget.chat_display
                         saved_html = chat_display.toHtml()
+                        scrollbar = chat_display.verticalScrollBar()
+                        saved_scroll = scrollbar.value() if scrollbar else None
                         chat_display.setUpdatesEnabled(False)
                         save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", filename)
+                        chat_display.setHtml(saved_html)
+                        if saved_scroll is not None:
+                            scrollbar.setValue(saved_scroll)
                         chat_display.setUpdatesEnabled(True)
                         if not save_path:
-                            if chat_display.toHtml() == "<html><head/><body/></html>":
-                                chat_display.setHtml(saved_html)
                             return
                         self.download_file(filename, from_user, chat_type, to_user, save_path)
-                        if chat_display.toHtml() == "<html><head/><body/></html>":
-                            chat_display.setHtml(saved_html)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при скачивании: {str(e)}")
         finally:
@@ -709,8 +764,8 @@ class MainWindow(QMainWindow):
                             'chat_type': chat_type,
                             'to': to_user
                         }
-                        self.client_thread.socket.send(json.dumps(start_packet).encode())
-                    self.client_thread.socket.send(json.dumps(packet).encode())
+                        send_packet(self.client_thread.socket, start_packet)
+                    send_packet(self.client_thread.socket, packet)
                     progress.setValue(i + 1)
                     QApplication.processEvents()
                 if not progress.wasCanceled():
@@ -721,7 +776,7 @@ class MainWindow(QMainWindow):
                         'chat_type': chat_type,
                         'to': to_user
                     }
-                    self.client_thread.socket.send(json.dumps(end_packet).encode())
+                    send_packet(self.client_thread.socket, end_packet)
                 else:
                     QMessageBox.information(self, "Отмена", "Отправка файла отменена")
         except Exception as e:
@@ -741,12 +796,12 @@ class MainWindow(QMainWindow):
         self.client_thread.start()
 
     def on_file_notify_received(self, from_user, filename, chat_type, filesize, timestamp):
-        link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={self.username}">Скачать</a>'
+        link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={self.username}">Скачать</a>&#8203;'
         msg = f"[{timestamp}] {from_user}: [Файл] {filename} ({filesize} байт) {link}"
         if chat_type == "general":
-            self.general_chat.chat_display.append(msg)
+            self.append_chat_line(self.general_chat.chat_display, msg)
         else:
-            self.private_chat.chat_display.append(msg)
+            self.append_chat_line(self.private_chat.chat_display, msg)
 
     def on_connection_error(self, error):
         self.close()
@@ -763,27 +818,27 @@ class MainWindow(QMainWindow):
                 timestamp = msg.get('timestamp', '')
                 chat_type = msg.get('chat_type', 'general')
                 if chat_type == 'general':
-                    self.general_chat.chat_display.append(f"[{timestamp}] {from_user}: {message}")
+                    self.append_chat_line(self.general_chat.chat_display, f"[{timestamp}] {from_user}: {message}")
                 else:
-                    self.private_chat.chat_display.append(f"[{timestamp}] {from_user}: {message}")
+                    self.append_chat_line(self.private_chat.chat_display, f"[{timestamp}] {from_user}: {message}")
             elif msg.get('type') == 'file':
                 from_user = msg.get('from', 'Неизвестный')
                 filename = msg.get('filename', '')
                 filesize = msg.get('filesize', 0)
                 timestamp = msg.get('timestamp', '')
                 chat_type = msg.get('chat_type', 'general')
-                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={self.username}">Скачать</a>'
+                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={self.username}">Скачать</a>&#8203;'
                 line = f"[{timestamp}] {from_user}: [Файл] {filename} ({filesize} байт) {link}"
                 if chat_type == 'general':
-                    self.general_chat.chat_display.append(line)
+                    self.append_chat_line(self.general_chat.chat_display, line)
                 else:
-                    self.private_chat.chat_display.append(line)
+                    self.append_chat_line(self.private_chat.chat_display, line)
 
     def on_message_received(self, from_user, message, to_user):
         if to_user == "general":
-            self.general_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {message}")
+            self.append_chat_line(self.general_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {message}")
         else:
-            self.private_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {message}")
+            self.append_chat_line(self.private_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {message}")
 
     def on_notification_received(self, message):
         QMessageBox.information(self, "Уведомление от Директора", message)
@@ -837,11 +892,11 @@ class MainWindow(QMainWindow):
 
         if tab_text == "Общий чат":
             if self.client_thread.send_message('general', message):
-                self.general_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
+                self.append_chat_line(self.general_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
                 input_widget.clear()
         else:
             if self.client_thread.send_message('Director', message):
-                self.private_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
+                self.append_chat_line(self.private_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
                 input_widget.clear()
 
     def closeEvent(self, event):

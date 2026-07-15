@@ -15,6 +15,38 @@ from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from crypto import CryptoManager
 
+
+def send_packet(sock, packet: dict):
+    data = json.dumps(packet).encode('utf-8')
+    header = len(data).to_bytes(4, byteorder='big')
+    sock.sendall(header + data)
+
+
+class PacketReader:
+
+    def __init__(self):
+        self.buffer = b''
+
+    def feed(self, chunk: bytes):
+        self.buffer += chunk
+
+    def pop_packets(self):
+        packets = []
+        while True:
+            if len(self.buffer) < 4:
+                break
+            length = int.from_bytes(self.buffer[:4], byteorder='big')
+            if len(self.buffer) < 4 + length:
+                break
+            raw = self.buffer[4:4 + length]
+            self.buffer = self.buffer[4 + length:]
+            try:
+                packets.append(json.loads(raw.decode('utf-8')))
+            except json.JSONDecodeError as e:
+                print(f"Повреждённый пакет отброшен: {e}")
+        return packets
+
+
 os.makedirs("admin", exist_ok=True)
 os.makedirs("database", exist_ok=True)
 os.makedirs("files", exist_ok=True)
@@ -132,7 +164,7 @@ class DatabaseManager:
     def get_private_messages(self, user1, user2):
         with self.lock:
             self.cursor.execute(
-                """SELECT from_user, to_user, message, timestamp FROM messages 
+                """SELECT from_user, to_user, message, timestamp FROM messages
                    WHERE chat_type='private' AND ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?))
                    ORDER BY timestamp""",
                 (user1, user2, user2, user1)
@@ -142,7 +174,7 @@ class DatabaseManager:
     def get_private_files(self, user1, user2):
         with self.lock:
             self.cursor.execute(
-                """SELECT from_user, to_user, filename, filepath, filesize, timestamp FROM files 
+                """SELECT from_user, to_user, filename, filepath, filesize, timestamp FROM files
                    WHERE chat_type='private' AND ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?))
                    ORDER BY timestamp""",
                 (user1, user2, user2, user1)
@@ -152,7 +184,7 @@ class DatabaseManager:
     def get_all_messages_for_user(self, username):
         with self.lock:
             self.cursor.execute(
-                """SELECT chat_type, from_user, to_user, message, timestamp FROM messages 
+                """SELECT chat_type, from_user, to_user, message, timestamp FROM messages
                    WHERE chat_type='general' OR (chat_type='private' AND (to_user=? OR from_user=?))
                    ORDER BY timestamp""",
                 (username, username)
@@ -162,7 +194,7 @@ class DatabaseManager:
     def get_all_files_for_user(self, username):
         with self.lock:
             self.cursor.execute(
-                """SELECT chat_type, from_user, to_user, filename, filepath, filesize, timestamp FROM files 
+                """SELECT chat_type, from_user, to_user, filename, filepath, filesize, timestamp FROM files
                    WHERE chat_type='general' OR (chat_type='private' AND (to_user=? OR from_user=?))
                    ORDER BY timestamp""",
                 (username, username)
@@ -179,10 +211,10 @@ class DatabaseManager:
     def get_all_users_with_private_chat(self):
         with self.lock:
             self.cursor.execute(
-                """SELECT DISTINCT from_user FROM messages 
+                """SELECT DISTINCT from_user FROM messages
                    WHERE chat_type='private' AND to_user='Director' AND from_user != 'Director'
                    UNION
-                   SELECT DISTINCT to_user FROM messages 
+                   SELECT DISTINCT to_user FROM messages
                    WHERE chat_type='private' AND from_user='Director' AND to_user != 'Director'
                    ORDER BY from_user"""
             )
@@ -205,6 +237,7 @@ class ServerThread(QThread):
     user_disconnected = pyqtSignal(str)
     auth_failed = pyqtSignal(str)
     stop_screen_requested = pyqtSignal(str)
+    file_received = pyqtSignal(str, str, str, str, int, str)
 
     def __init__(self, server_password, port=5555):
         super().__init__()
@@ -232,32 +265,51 @@ class ServerThread(QThread):
             try:
                 client_socket, addr = self.ssl_server.accept()
 
-                auth_data = client_socket.recv(1024).decode()
+                auth_reader = PacketReader()
+                auth_packet = None
+                deadline = time.time() + 10.0
+                client_socket.settimeout(10.0)
+                while time.time() < deadline:
+                    chunk = client_socket.recv(4096)
+                    if not chunk:
+                        break
+                    auth_reader.feed(chunk)
+                    pkts = auth_reader.pop_packets()
+                    if pkts:
+                        auth_packet = pkts[0]
+                        break
+                client_socket.settimeout(None)
+
                 try:
-                    auth_packet = json.loads(auth_data)
+                    if auth_packet is None:
+                        client_socket.close()
+                        continue
                     username = auth_packet.get('username')
                     password = auth_packet.get('password')
 
                     if not username or not password:
-                        client_socket.send(json.dumps({'status': 'failed', 'error': 'Пустые учетные данные'}).encode())
+                        send_packet(client_socket, {'status': 'failed', 'error': 'Пустые учетные данные'})
                         client_socket.close()
                         continue
 
                     password_hash = hash_password(password)
 
                     if password_hash == self.server_password_hash:
-                        client_socket.send(json.dumps({'status': 'success'}).encode())
+                        send_packet(client_socket, {'status': 'success'})
                         self.clients[username] = {'socket': client_socket, 'addr': addr}
                         self.user_connected.emit(username)
                         client_thread = threading.Thread(target=self.handle_client, args=(client_socket, username))
                         client_thread.daemon = True
                         client_thread.start()
                     else:
-                        client_socket.send(json.dumps({'status': 'failed', 'error': 'Неверный пароль'}).encode())
+                        send_packet(client_socket, {'status': 'failed', 'error': 'Неверный пароль'})
                         client_socket.close()
                         self.auth_failed.emit(username)
                 except Exception as e:
-                    client_socket.send(json.dumps({'status': 'failed', 'error': str(e)}).encode())
+                    try:
+                        send_packet(client_socket, {'status': 'failed', 'error': str(e)})
+                    except Exception:
+                        pass
                     client_socket.close()
 
             except socket.timeout:
@@ -266,178 +318,174 @@ class ServerThread(QThread):
                 break
 
     def handle_client(self, client_socket, username):
-        buffer = b''
+        reader = PacketReader()
         try:
             while self.running:
                 chunk = client_socket.recv(65536)
                 if not chunk:
                     break
-                buffer += chunk
-                try:
-                    decoded = buffer.decode()
-                    packet = json.loads(decoded)
-                    buffer = b''
-                    packet_type = packet.get('type')
+                reader.feed(chunk)
+                for packet in reader.pop_packets():
+                    try:
+                        packet_type = packet.get('type')
 
-                    if packet_type == 'message':
-                        to_user = packet.get('to')
-                        message = packet.get('message')
-                        encrypted = crypto.encrypt_message(message)
+                        if packet_type == 'message':
+                            to_user = packet.get('to')
+                            message = packet.get('message')
+                            encrypted = crypto.encrypt_message(message)
 
-                        if to_user == 'general':
-                            db.save_message('general', username, 'general', encrypted)
-                            self.message_received.emit(username, encrypted, to_user, 'general')
-                            decrypted = crypto.decrypt_message(encrypted)
-                            for user, info in self.clients.items():
-                                if user != username:
+                            if to_user == 'general':
+                                db.save_message('general', username, 'general', encrypted)
+                                self.message_received.emit(username, encrypted, to_user, 'general')
+                                decrypted = crypto.decrypt_message(encrypted)
+                                for user, info in self.clients.items():
+                                    if user != username:
+                                        try:
+                                            send_packet(info['socket'], {
+                                                'type': 'message',
+                                                'from': username,
+                                                'message': decrypted,
+                                                'to': 'general'
+                                            })
+                                        except:
+                                            pass
+                            else:
+                                db.save_message('private', username, to_user, encrypted)
+                                self.message_received.emit(username, encrypted, to_user, 'private')
+                                if to_user in self.clients:
+                                    decrypted = crypto.decrypt_message(encrypted)
                                     try:
-                                        info['socket'].send(json.dumps({
+                                        send_packet(self.clients[to_user]['socket'], {
                                             'type': 'message',
                                             'from': username,
                                             'message': decrypted,
-                                            'to': 'general'
-                                        }).encode())
+                                            'to': to_user
+                                        })
                                     except:
                                         pass
-                        else:
-                            db.save_message('private', username, to_user, encrypted)
-                            self.message_received.emit(username, encrypted, to_user, 'private')
-                            if to_user in self.clients:
-                                decrypted = crypto.decrypt_message(encrypted)
-                                try:
-                                    self.clients[to_user]['socket'].send(json.dumps({
-                                        'type': 'message',
-                                        'from': username,
-                                        'message': decrypted,
-                                        'to': to_user
-                                    }).encode())
-                                except:
-                                    pass
 
-                    elif packet_type == 'screen':
-                        to_user = packet.get('to')
-                        screen_data = packet.get('data')
-                        print(f"Получен скриншот от {username}, размер данных: {len(screen_data)}")
-                        self.screen_received.emit(username, screen_data)
+                        elif packet_type == 'screen':
+                            to_user = packet.get('to')
+                            screen_data = packet.get('data')
+                            print(f"Получен скриншот от {username}, размер данных: {len(screen_data)}")
+                            self.screen_received.emit(username, screen_data)
 
-                    elif packet_type == 'stop_screen':
-                        self.stop_screen_requested.emit(username)
+                        elif packet_type == 'stop_screen':
+                            self.stop_screen_requested.emit(username)
 
-                    elif packet_type == 'file_start':
-                        to_user = packet.get('to')
-                        filename = packet.get('filename')
-                        filesize = packet.get('filesize')
-                        total_chunks = packet.get('total_chunks')
-                        chat_type = packet.get('chat_type')
-                        file_id = packet.get('file_id')
-                        if file_id in self.file_receives:
-                            self.file_receives[file_id]['file'].close()
-                            del self.file_receives[file_id]
-                        safe_filename = f"{int(time.time())}_{username}_{filename}"
-                        filepath = os.path.join("files", safe_filename)
-                        f = open(filepath, "wb")
-                        self.file_receives[file_id] = {
-                            'file': f,
-                            'filename': filename,
-                            'safe_filename': safe_filename,
-                            'filepath': filepath,
-                            'filesize': filesize,
-                            'chat_type': chat_type,
-                            'from_user': username,
-                            'to_user': to_user,
-                            'total_chunks': total_chunks,
-                            'received_chunks': 0
-                        }
-                        print(f"[FILE] Начало приёма {filename} от {username}")
-
-                    elif packet_type == 'file_chunk':
-                        file_id = packet.get('file_id')
-                        chunk_index = packet.get('chunk_index')
-                        chunk_data_b64 = packet.get('data')
-                        if file_id in self.file_receives:
-                            try:
-                                chunk_data = base64.b64decode(chunk_data_b64)
-                                self.file_receives[file_id]['file'].write(chunk_data)
-                                self.file_receives[file_id]['received_chunks'] += 1
-                            except Exception as e:
-                                print(f"Ошибка записи чанка: {e}")
-
-                    elif packet_type == 'file_end':
-                        file_id = packet.get('file_id')
-                        if file_id in self.file_receives:
-                            info = self.file_receives[file_id]
-                            info['file'].close()
-                            chat_type = info['chat_type']
-                            from_user = info['from_user']
-                            to_user = info['to_user']
-                            filename = info['filename']
-                            filepath = info['filepath']
-                            filesize = info['filesize']
-                            db.save_file(chat_type, from_user, to_user, filename, filepath, filesize)
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            print(f"[FILE] Файл {filename} сохранён в {filepath}")
-                            del self.file_receives[file_id]
-
-                            notify_data = {
-                                'type': 'file_notify',
-                                'from': from_user,
+                        elif packet_type == 'file_start':
+                            to_user = packet.get('to')
+                            filename = packet.get('filename')
+                            filesize = packet.get('filesize')
+                            total_chunks = packet.get('total_chunks')
+                            chat_type = packet.get('chat_type')
+                            file_id = packet.get('file_id')
+                            if file_id in self.file_receives:
+                                self.file_receives[file_id]['file'].close()
+                                del self.file_receives[file_id]
+                            safe_filename = f"{int(time.time())}_{username}_{filename}"
+                            filepath = os.path.join("files", safe_filename)
+                            f = open(filepath, "wb")
+                            self.file_receives[file_id] = {
+                                'file': f,
                                 'filename': filename,
+                                'safe_filename': safe_filename,
+                                'filepath': filepath,
                                 'filesize': filesize,
                                 'chat_type': chat_type,
-                                'timestamp': timestamp,
-                                'to': to_user
+                                'from_user': username,
+                                'to_user': to_user,
+                                'total_chunks': total_chunks,
+                                'received_chunks': 0
                             }
-                            if chat_type == 'general':
-                                for user, info in self.clients.items():
-                                    try:
-                                        info['socket'].send(json.dumps(notify_data).encode())
-                                    except:
-                                        pass
-                            else:
-                                recipients = [from_user, to_user]
-                                for user in recipients:
-                                    if user in self.clients:
+                            print(f"[FILE] Начало приёма {filename} от {username}")
+
+                        elif packet_type == 'file_chunk':
+                            file_id = packet.get('file_id')
+                            chunk_index = packet.get('chunk_index')
+                            chunk_data_b64 = packet.get('data')
+                            if file_id in self.file_receives:
+                                try:
+                                    chunk_data = base64.b64decode(chunk_data_b64)
+                                    self.file_receives[file_id]['file'].write(chunk_data)
+                                    self.file_receives[file_id]['received_chunks'] += 1
+                                except Exception as e:
+                                    print(f"Ошибка записи чанка: {e}")
+
+                        elif packet_type == 'file_end':
+                            file_id = packet.get('file_id')
+                            if file_id in self.file_receives:
+                                info = self.file_receives[file_id]
+                                info['file'].close()
+                                chat_type = info['chat_type']
+                                from_user = info['from_user']
+                                to_user = info['to_user']
+                                filename = info['filename']
+                                filepath = info['filepath']
+                                filesize = info['filesize']
+                                db.save_file(chat_type, from_user, to_user, filename, filepath, filesize)
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                print(f"[FILE] Файл {filename} сохранён в {filepath}")
+                                del self.file_receives[file_id]
+
+                                notify_data = {
+                                    'type': 'file_notify',
+                                    'from': from_user,
+                                    'filename': filename,
+                                    'filesize': filesize,
+                                    'chat_type': chat_type,
+                                    'timestamp': timestamp,
+                                    'to': to_user
+                                }
+                                self.file_received.emit(from_user, to_user, filename, chat_type, filesize, timestamp)
+                                if chat_type == 'general':
+                                    for user, info in self.clients.items():
                                         try:
-                                            self.clients[user]['socket'].send(json.dumps(notify_data).encode())
+                                            send_packet(info['socket'], notify_data)
                                         except:
                                             pass
+                                else:
+                                    recipients = [from_user, to_user]
+                                    for user in recipients:
+                                        if user in self.clients:
+                                            try:
+                                                send_packet(self.clients[user]['socket'], notify_data)
+                                            except:
+                                                pass
 
-                    elif packet_type == 'file_request':
-                        filename = packet.get('filename')
-                        from_user = packet.get('from_user')
-                        chat_type = packet.get('chat_type')
-                        to_user = packet.get('to_user')
-                        print(f"[FILE] Запрос на скачивание {filename} от {username} (отправитель {from_user})")
-                        file_info = db.get_file_by_name_and_sender(filename, from_user, to_user, chat_type)
-                        if file_info:
-                            file_id_db, filepath, filesize = file_info
-                            if os.path.exists(filepath):
-                                chunk_size = 1024 * 1024
-                                total_chunks = (filesize + chunk_size - 1) // chunk_size
-                                file_id_download = f"download_{int(time.time())}_{from_user}_{filename}"
-                                with open(filepath, "rb") as f:
-                                    for i in range(total_chunks):
-                                        data = f.read(chunk_size)
-                                        data_b64 = base64.b64encode(data).decode()
-                                        packet = {
-                                            'type': 'file_download_chunk',
-                                            'file_id': file_id_download,
-                                            'filename': filename,
-                                            'chunk_index': i,
-                                            'total_chunks': total_chunks,
-                                            'data': data_b64
-                                        }
-                                        client_socket.send(json.dumps(packet).encode())
+                        elif packet_type == 'file_request':
+                            filename = packet.get('filename')
+                            from_user = packet.get('from_user')
+                            chat_type = packet.get('chat_type')
+                            to_user = packet.get('to_user')
+                            print(f"[FILE] Запрос на скачивание {filename} от {username} (отправитель {from_user})")
+                            file_info = db.get_file_by_name_and_sender(filename, from_user, to_user, chat_type)
+                            if file_info:
+                                file_id_db, filepath, filesize = file_info
+                                if os.path.exists(filepath):
+                                    chunk_size = 1024 * 1024
+                                    total_chunks = (filesize + chunk_size - 1) // chunk_size
+                                    file_id_download = f"download_{int(time.time())}_{from_user}_{filename}"
+                                    with open(filepath, "rb") as f:
+                                        for i in range(total_chunks):
+                                            data = f.read(chunk_size)
+                                            data_b64 = base64.b64encode(data).decode()
+                                            dl_packet = {
+                                                'type': 'file_download_chunk',
+                                                'file_id': file_id_download,
+                                                'filename': filename,
+                                                'chunk_index': i,
+                                                'total_chunks': total_chunks,
+                                                'data': data_b64
+                                            }
+                                            send_packet(client_socket, dl_packet)
+                                else:
+                                    print(f"[FILE] Файл {filepath} не найден")
                             else:
-                                print(f"[FILE] Файл {filepath} не найден")
-                        else:
-                            print(f"[FILE] Файл {filename} не найден в БД")
+                                print(f"[FILE] Файл {filename} не найден в БД")
 
-                except json.JSONDecodeError:
-                    continue
-                except Exception as e:
-                    print(f"Ошибка обработки пакета от {username}: {e}")
-                    buffer = b''
+                    except Exception as e:
+                        print(f"Ошибка обработки пакета от {username}: {e}")
         except Exception as e:
             print(f"Ошибка в handle_client для {username}: {e}")
         finally:
@@ -449,11 +497,11 @@ class ServerThread(QThread):
     def send_notification(self, to_user, message):
         if to_user in self.clients:
             try:
-                self.clients[to_user]['socket'].send(json.dumps({
+                send_packet(self.clients[to_user]['socket'], {
                     'type': 'notification',
                     'from': 'Director',
                     'message': message
-                }).encode())
+                })
                 return True
             except:
                 return False
@@ -495,10 +543,10 @@ class ServerThread(QThread):
                     })
                 history_data.sort(key=lambda x: x['timestamp'])
                 if history_data:
-                    self.clients[username]['socket'].send(json.dumps({
+                    send_packet(self.clients[username]['socket'], {
                         'type': 'history',
                         'messages': history_data
-                    }).encode())
+                    })
             except:
                 pass
 
@@ -645,6 +693,13 @@ class MainWindow(QMainWindow):
         self.load_private_chats()
         self.start_server()
 
+    def append_chat_line(self, chat_display, line):
+        chat_display.append(line)
+        cursor = chat_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        cursor.setCharFormat(QTextCharFormat())
+        chat_display.setTextCursor(cursor)
+
     def load_private_chats(self):
         users = db.get_all_users_with_private_chat()
         for username in users:
@@ -665,10 +720,10 @@ class MainWindow(QMainWindow):
             for from_user, to_user, filename, filepath, filesize, ts in history_files:
                 display_name = "Я" if from_user == "Director" else from_user
                 link = f'<a href="download://?filename={filename}&from={from_user}&chat_type=private&to={username}">Скачать</a>'
-                combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}"))
+                combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}&#8203;"))
             combined.sort(key=lambda x: x[0])
             for _, line in combined:
-                chat_widget.chat_display.append(line)
+                self.append_chat_line(chat_widget.chat_display, line)
 
     def init_ui(self):
         self.setWindowTitle("Asterion - Директор")
@@ -823,10 +878,10 @@ class MainWindow(QMainWindow):
         for from_user, to_user, filename, filepath, filesize, ts in all_files:
             display_name = "Я" if from_user == "Director" else from_user
             link = f'<a href="download://?filename={filename}&from={from_user}&chat_type=general&to=general">Скачать</a>'
-            combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}"))
+            combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}&#8203;"))
         combined.sort(key=lambda x: x[0])
         for _, line in combined:
-            self.general_chat.chat_display.append(line)
+            self.append_chat_line(self.general_chat.chat_display, line)
 
     def create_chat_widget(self):
         widget = QWidget()
@@ -941,12 +996,15 @@ class MainWindow(QMainWindow):
                     if current_widget:
                         chat_display = current_widget.chat_display
                         saved_html = chat_display.toHtml()
+                        scrollbar = chat_display.verticalScrollBar()
+                        saved_scroll = scrollbar.value() if scrollbar else None
                         chat_display.setUpdatesEnabled(False)
                         save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", filename)
+                        chat_display.setHtml(saved_html)
+                        if saved_scroll is not None and scrollbar:
+                            scrollbar.setValue(saved_scroll)
                         chat_display.setUpdatesEnabled(True)
                         if not save_path:
-                            if chat_display.toHtml() == "<html><head/><body/></html>":
-                                chat_display.setHtml(saved_html)
                             return
                         file_info = db.get_file_by_name_and_sender(filename, from_user, to_user, chat_type)
                         if file_info:
@@ -961,8 +1019,6 @@ class MainWindow(QMainWindow):
                                 QMessageBox.critical(self, "Ошибка", "Файл не найден на сервере")
                         else:
                             QMessageBox.critical(self, "Ошибка", "Файл не найден в базе данных")
-                        if chat_display.toHtml() == "<html><head/><body/></html>":
-                            chat_display.setHtml(saved_html)
         except Exception as e:
             QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при скачивании: {str(e)}")
         finally:
@@ -1004,10 +1060,10 @@ class MainWindow(QMainWindow):
 
             link = f'<a href="download://?filename={filename}&from=Director&chat_type={chat_type}&to={to_user}">Скачать</a>'
             if chat_type == "general":
-                self.general_chat.chat_display.append(f"[{timestamp}] Я: [Файл] {filename} ({filesize} байт) {link}")
+                self.append_chat_line(self.general_chat.chat_display, f"[{timestamp}] Я: [Файл] {filename} ({filesize} байт) {link}&#8203;")
             else:
                 if to_user in self.private_chats:
-                    self.private_chats[to_user].chat_display.append(f"[{timestamp}] Я: [Файл] {filename} ({filesize} байт) {link}")
+                    self.append_chat_line(self.private_chats[to_user].chat_display, f"[{timestamp}] Я: [Файл] {filename} ({filesize} байт) {link}&#8203;")
 
             notify_data = {
                 'type': 'file_notify',
@@ -1021,13 +1077,13 @@ class MainWindow(QMainWindow):
             if chat_type == 'general':
                 for user, info in self.server_thread.clients.items():
                     try:
-                        info['socket'].send(json.dumps(notify_data).encode())
+                        send_packet(info['socket'], notify_data)
                     except:
                         pass
             else:
                 if to_user in self.server_thread.clients:
                     try:
-                        self.server_thread.clients[to_user]['socket'].send(json.dumps(notify_data).encode())
+                        send_packet(self.server_thread.clients[to_user]['socket'], notify_data)
                     except:
                         pass
         except Exception as e:
@@ -1041,6 +1097,7 @@ class MainWindow(QMainWindow):
         self.server_thread.auth_failed.connect(self.on_auth_failed)
         self.server_thread.screen_received.connect(self.on_screen_received)
         self.server_thread.stop_screen_requested.connect(self.on_stop_screen_requested)
+        self.server_thread.file_received.connect(self.on_file_received)
         self.server_thread.start()
 
     def on_screen_received(self, username, screen_data):
@@ -1078,10 +1135,10 @@ class MainWindow(QMainWindow):
     def stop_screen_view(self):
         if self.current_screen_user and self.current_screen_user in self.server_thread.clients:
             try:
-                self.server_thread.clients[self.current_screen_user]['socket'].send(json.dumps({
+                send_packet(self.server_thread.clients[self.current_screen_user]['socket'], {
                     'type': 'stop_screen',
                     'from': 'Director'
-                }).encode())
+                })
             except:
                 pass
         self.current_screen_user = None
@@ -1113,10 +1170,10 @@ class MainWindow(QMainWindow):
             for from_user, to_user, filename, filepath, filesize, ts in history_files:
                 display_name = "Я" if from_user == "Director" else from_user
                 link = f'<a href="download://?filename={filename}&from={from_user}&chat_type=private&to={username}">Скачать</a>'
-                combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}"))
+                combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}&#8203;"))
             combined.sort(key=lambda x: x[0])
             for _, line in combined:
-                chat_widget.chat_display.append(line)
+                self.append_chat_line(chat_widget.chat_display, line)
 
         self.server_thread.send_history(username)
 
@@ -1131,6 +1188,17 @@ class MainWindow(QMainWindow):
             self.screen_label.setPixmap(QPixmap())
             self.stop_screen_btn.setEnabled(False)
 
+    def on_file_received(self, from_user, to_user, filename, chat_type, filesize, timestamp):
+        link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={to_user}">Скачать</a>&#8203;'
+        line = f"[{timestamp}] {from_user}: [Файл] {filename} ({filesize} байт) {link}"
+        if chat_type == "general":
+            self.append_chat_line(self.general_chat.chat_display, line)
+        else:
+            if from_user in self.private_chats:
+                self.append_chat_line(self.private_chats[from_user].chat_display, line)
+            elif to_user in self.private_chats:
+                self.append_chat_line(self.private_chats[to_user].chat_display, line)
+
     def on_message_received(self, from_user, message, to_user, chat_type):
         if from_user == "Director":
             display_message = message
@@ -1141,11 +1209,13 @@ class MainWindow(QMainWindow):
                 display_message = "[Decryption error]"
 
         if chat_type == "general":
-            self.general_chat.chat_display.append(
+            self.append_chat_line(
+                self.general_chat.chat_display,
                 f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {display_message}")
         else:
             if from_user in self.private_chats:
-                self.private_chats[from_user].chat_display.append(
+                self.append_chat_line(
+                    self.private_chats[from_user].chat_display,
                     f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {display_message}")
 
     def send_message(self, input_widget):
@@ -1159,16 +1229,16 @@ class MainWindow(QMainWindow):
         if tab_text == "Общий чат":
             encrypted = crypto.encrypt_message(message)
             db.save_message("general", "Director", "general", encrypted)
-            self.general_chat.chat_display.append(f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
+            self.append_chat_line(self.general_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
 
             for user, info in self.server_thread.clients.items():
                 try:
-                    info['socket'].send(json.dumps({
+                    send_packet(info['socket'], {
                         'type': 'message',
                         'from': 'Director',
                         'message': message,
                         'to': 'general'
-                    }).encode())
+                    })
                 except:
                     pass
         else:
@@ -1176,17 +1246,18 @@ class MainWindow(QMainWindow):
             if to_user in self.private_chats:
                 encrypted = crypto.encrypt_message(message)
                 db.save_message("private", "Director", to_user, encrypted)
-                self.private_chats[to_user].chat_display.append(
+                self.append_chat_line(
+                    self.private_chats[to_user].chat_display,
                     f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
 
                 if to_user in self.server_thread.clients:
                     try:
-                        self.server_thread.clients[to_user]['socket'].send(json.dumps({
+                        send_packet(self.server_thread.clients[to_user]['socket'], {
                             'type': 'message',
                             'from': 'Director',
                             'message': message,
                             'to': to_user
-                        }).encode())
+                        })
                     except:
                         pass
 
@@ -1205,10 +1276,10 @@ class MainWindow(QMainWindow):
         if action == view_screen:
             if username in self.server_thread.clients:
                 try:
-                    self.server_thread.clients[username]['socket'].send(json.dumps({
+                    send_packet(self.server_thread.clients[username]['socket'], {
                         'type': 'request_screen',
                         'from': 'Director'
-                    }).encode())
+                    })
                     self.current_screen_user = username
                     self.chat_tabs.setCurrentIndex(self.chat_tabs.indexOf(self.screen_tab))
                     self.screen_label.setText(f"Загрузка экрана {username}...")
