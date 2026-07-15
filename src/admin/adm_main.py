@@ -13,7 +13,7 @@ from datetime import datetime
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
-from crypto import CryptoManager
+from crypto import CryptoManager, TransportCipher
 
 
 def send_packet(sock, packet: dict):
@@ -95,7 +95,7 @@ def generate_self_signed_cert():
         f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                   serialization.NoEncryption()))
 
-crypto = CryptoManager()
+crypto = None
 
 class DatabaseManager:
     def __init__(self):
@@ -245,6 +245,7 @@ class ServerThread(QThread):
         self.clients = {}
         self.running = True
         self.server_password_hash = hash_password(server_password)
+        self.transport = TransportCipher(server_password)
         self.file_receives = {}
 
     def run(self):
@@ -331,7 +332,8 @@ class ServerThread(QThread):
 
                         if packet_type == 'message':
                             to_user = packet.get('to')
-                            message = packet.get('message')
+                            wire_message = packet.get('message')
+                            message = self.transport.decrypt_text(wire_message)
                             encrypted = crypto.encrypt_message(message)
 
                             if to_user == 'general':
@@ -344,7 +346,7 @@ class ServerThread(QThread):
                                             send_packet(info['socket'], {
                                                 'type': 'message',
                                                 'from': username,
-                                                'message': decrypted,
+                                                'message': self.transport.encrypt_text(decrypted),
                                                 'to': 'general'
                                             })
                                         except:
@@ -358,7 +360,7 @@ class ServerThread(QThread):
                                         send_packet(self.clients[to_user]['socket'], {
                                             'type': 'message',
                                             'from': username,
-                                            'message': decrypted,
+                                            'message': self.transport.encrypt_text(decrypted),
                                             'to': to_user
                                         })
                                     except:
@@ -366,7 +368,7 @@ class ServerThread(QThread):
 
                         elif packet_type == 'screen':
                             to_user = packet.get('to')
-                            screen_data = packet.get('data')
+                            screen_data = self.transport.decrypt_text(packet.get('data'))
                             print(f"Получен скриншот от {username}, размер данных: {len(screen_data)}")
                             self.screen_received.emit(username, screen_data)
 
@@ -403,11 +405,13 @@ class ServerThread(QThread):
                         elif packet_type == 'file_chunk':
                             file_id = packet.get('file_id')
                             chunk_index = packet.get('chunk_index')
-                            chunk_data_b64 = packet.get('data')
+                            chunk_token = packet.get('data')
                             if file_id in self.file_receives:
                                 try:
-                                    chunk_data = base64.b64decode(chunk_data_b64)
-                                    self.file_receives[file_id]['file'].write(chunk_data)
+                                    chunk_data = self.transport.decrypt_bytes(chunk_token)
+                                    reencrypted_chunk = crypto.encrypt_file_bytes(chunk_data)
+                                    length_prefix = len(reencrypted_chunk).to_bytes(4, "big")
+                                    self.file_receives[file_id]['file'].write(length_prefix + reencrypted_chunk)
                                     self.file_receives[file_id]['received_chunks'] += 1
                                 except Exception as e:
                                     print(f"Ошибка записи чанка: {e}")
@@ -463,22 +467,22 @@ class ServerThread(QThread):
                             if file_info:
                                 file_id_db, filepath, filesize = file_info
                                 if os.path.exists(filepath):
+                                    plain_data = crypto.read_encrypted_file(filepath)
                                     chunk_size = 1024 * 1024
-                                    total_chunks = (filesize + chunk_size - 1) // chunk_size
+                                    total_chunks = (len(plain_data) + chunk_size - 1) // chunk_size
                                     file_id_download = f"download_{int(time.time())}_{from_user}_{filename}"
-                                    with open(filepath, "rb") as f:
-                                        for i in range(total_chunks):
-                                            data = f.read(chunk_size)
-                                            data_b64 = base64.b64encode(data).decode()
-                                            dl_packet = {
-                                                'type': 'file_download_chunk',
-                                                'file_id': file_id_download,
-                                                'filename': filename,
-                                                'chunk_index': i,
-                                                'total_chunks': total_chunks,
-                                                'data': data_b64
-                                            }
-                                            send_packet(client_socket, dl_packet)
+                                    for i in range(total_chunks):
+                                        data = plain_data[i * chunk_size:(i + 1) * chunk_size]
+                                        data_token = self.transport.encrypt_bytes(data)
+                                        dl_packet = {
+                                            'type': 'file_download_chunk',
+                                            'file_id': file_id_download,
+                                            'filename': filename,
+                                            'chunk_index': i,
+                                            'total_chunks': total_chunks,
+                                            'data': data_token
+                                        }
+                                        send_packet(client_socket, dl_packet)
                                 else:
                                     print(f"[FILE] Файл {filepath} не найден")
                             else:
@@ -500,7 +504,7 @@ class ServerThread(QThread):
                 send_packet(self.clients[to_user]['socket'], {
                     'type': 'notification',
                     'from': 'Director',
-                    'message': message
+                    'message': self.transport.encrypt_text(message)
                 })
                 return True
             except:
@@ -524,7 +528,7 @@ class ServerThread(QThread):
                         'chat_type': chat_type,
                         'from': from_user,
                         'to': target,
-                        'message': decrypted,
+                        'message': self.transport.encrypt_text(decrypted),
                         'timestamp': ts
                     })
                 for chat_type, from_user, to_user, filename, filepath, filesize, ts in history_files:
@@ -672,12 +676,20 @@ class ServerPasswordDialog(QDialog):
 
         self.setLayout(layout)
 
+    MIN_PASSWORD_LENGTH = 10
+
     def get_password(self):
         pwd1 = self.password_input.text().strip()
         pwd2 = self.confirm_input.text().strip()
-        if pwd1 and pwd2 and pwd1 == pwd2:
-            return pwd1
-        return None
+        if not pwd1 or not pwd2:
+            return None, "Пароль не может быть пустым"
+        if pwd1 != pwd2:
+            return None, "Пароли не совпадают"
+        if len(pwd1) % 2 != 0:
+            return None, "Пароль должен содержать чётное количество символов"
+        if len(pwd1) < self.MIN_PASSWORD_LENGTH:
+            return None, f"Пароль должен содержать не менее {self.MIN_PASSWORD_LENGTH} символов"
+        return pwd1, None
 
 class MainWindow(QMainWindow):
     def __init__(self, server_password):
@@ -694,11 +706,16 @@ class MainWindow(QMainWindow):
         self.start_server()
 
     def append_chat_line(self, chat_display, line):
-        chat_display.append(line)
         cursor = chat_display.textCursor()
+        cursor.movePosition(QTextCursor.MoveOperation.End)
+        if not chat_display.document().isEmpty():
+            cursor.insertBlock()
+        cursor.setCharFormat(QTextCharFormat())
+        cursor.insertHtml(line)
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.setCharFormat(QTextCharFormat())
         chat_display.setTextCursor(cursor)
+        chat_display.ensureCursorVisible()
 
     def load_private_chats(self):
         users = db.get_all_users_with_private_chat()
@@ -1011,7 +1028,9 @@ class MainWindow(QMainWindow):
                             _, filepath, _ = file_info
                             if os.path.exists(filepath):
                                 try:
-                                    shutil.copy2(filepath, save_path)
+                                    plain_data = crypto.read_encrypted_file(filepath)
+                                    with open(save_path, "wb") as f:
+                                        f.write(plain_data)
                                     QMessageBox.information(self, "Успех", f"Файл {filename} сохранён")
                                 except Exception as e:
                                     QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл: {str(e)}")
@@ -1053,7 +1072,9 @@ class MainWindow(QMainWindow):
         try:
             safe_filename = f"{int(time.time())}_Director_{filename}"
             filepath = os.path.join("files", safe_filename)
-            shutil.copy2(file_path, filepath)
+            with open(file_path, "rb") as f:
+                plain_data = f.read()
+            crypto.write_encrypted_file(filepath, plain_data)
             filesize = os.path.getsize(file_path)
             db.save_file(chat_type, "Director", to_user, filename, filepath, filesize)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1236,7 +1257,7 @@ class MainWindow(QMainWindow):
                     send_packet(info['socket'], {
                         'type': 'message',
                         'from': 'Director',
-                        'message': message,
+                        'message': self.server_thread.transport.encrypt_text(message),
                         'to': 'general'
                     })
                 except:
@@ -1255,7 +1276,7 @@ class MainWindow(QMainWindow):
                         send_packet(self.server_thread.clients[to_user]['socket'], {
                             'type': 'message',
                             'from': 'Director',
-                            'message': message,
+                            'message': self.server_thread.transport.encrypt_text(message),
                             'to': to_user
                         })
                     except:
@@ -1398,15 +1419,27 @@ def main():
 
     while True:
         if password_dialog.exec() == QDialog.DialogCode.Accepted:
-            password = password_dialog.get_password()
+            password, error = password_dialog.get_password()
             if password:
                 break
             else:
-                QMessageBox.warning(None, "Ошибка", "Пароли не совпадают или пустые")
+                QMessageBox.warning(None, "Ошибка", error)
         else:
             sys.exit(0)
 
-    window = MainWindow(password)
+    login_password = password[:len(password) // 2]
+
+    global crypto
+    try:
+        crypto = CryptoManager(password)
+    except ValueError as e:
+        QMessageBox.critical(None, "Ошибка", str(e))
+        sys.exit(1)
+
+    QMessageBox.information(None, "Пароль для входа сотрудников",
+                             f"Сотрудники должны вводить для входа: {login_password}")
+
+    window = MainWindow(login_password)
     window.show()
     sys.exit(app.exec())
 

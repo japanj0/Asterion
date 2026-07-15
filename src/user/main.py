@@ -13,6 +13,7 @@ from PyQt6.QtGui import *
 import mss
 import numpy as np
 import cv2
+from crypto import TransportCipher
 
 
 def send_packet(sock, packet: dict):
@@ -148,6 +149,7 @@ class ClientThread(QThread):
         self.running = True
         self.download_buffers = {}
         self.reader = PacketReader()
+        self.transport = TransportCipher(password)
 
     def run(self):
         try:
@@ -207,12 +209,12 @@ class ClientThread(QThread):
 
                         if packet_type == 'message':
                             from_user = packet.get('from', 'Неизвестный')
-                            message = packet.get('message', '')
+                            message = self.transport.decrypt_text(packet.get('message', ''))
                             to_user = packet.get('to', 'general')
                             self.message_received.emit(from_user, message, to_user)
 
                         elif packet_type == 'notification':
-                            message = packet.get('message', '')
+                            message = self.transport.decrypt_text(packet.get('message', ''))
                             self.notification_received.emit(message)
 
                         elif packet_type == 'request_screen':
@@ -223,6 +225,9 @@ class ClientThread(QThread):
 
                         elif packet_type == 'history':
                             messages = packet.get('messages', [])
+                            for msg in messages:
+                                if msg.get('type') == 'message':
+                                    msg['message'] = self.transport.decrypt_text(msg.get('message', ''))
                             self.history_received.emit(messages)
 
                         elif packet_type == 'file_notify':
@@ -237,8 +242,8 @@ class ClientThread(QThread):
                             file_id = packet.get('file_id')
                             chunk_index = packet.get('chunk_index')
                             total_chunks = packet.get('total_chunks')
-                            data_b64 = packet.get('data')
-                            chunk_data = base64.b64decode(data_b64)
+                            data_token = packet.get('data')
+                            chunk_data = self.transport.decrypt_bytes(data_token)
                             self.file_download_chunk_received.emit(file_id, chunk_index, total_chunks, chunk_data)
 
                 except socket.timeout:
@@ -265,7 +270,7 @@ class ClientThread(QThread):
                 packet = {
                     'type': 'message',
                     'to': to_user,
-                    'message': message
+                    'message': self.transport.encrypt_text(message)
                 }
                 send_packet(self.socket, packet)
                 return True
@@ -279,7 +284,7 @@ class ClientThread(QThread):
                 packet = {
                     'type': 'screen',
                     'to': to_user,
-                    'data': screen_data
+                    'data': self.transport.encrypt_text(screen_data)
                 }
                 send_packet(self.socket, packet)
                 return True
@@ -747,12 +752,12 @@ class MainWindow(QMainWindow):
                     if progress.wasCanceled():
                         break
                     data = f.read(chunk_size)
-                    data_b64 = base64.b64encode(data).decode()
+                    data_token = self.client_thread.transport.encrypt_bytes(data)
                     packet = {
                         'type': 'file_chunk',
                         'file_id': file_id,
                         'chunk_index': i,
-                        'data': data_b64
+                        'data': data_token
                     }
                     if i == 0:
                         start_packet = {

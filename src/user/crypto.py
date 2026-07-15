@@ -40,47 +40,24 @@ class TransportCipher:
         return self.cipher.decrypt(token.encode("utf-8"))
 
 
-_KEY_WRAP_ITERATIONS = 390_000
-
-
 class CryptoManager:
-    def __init__(self, password):
+    def __init__(self):
         self.key_dir = Path("admin")
         self.key_dir.mkdir(exist_ok=True)
         self.key_file = self.key_dir / "secret.key"
-        self.key = self._load_or_create_key(password)
+        self.key = self._load_or_create_key()
         self.cipher = Fernet(self.key)
         self.clients = {}
 
-    def _derive_wrapping_key(self, password, salt):
-        kdf = PBKDF2HMAC(
-            algorithm=hashes.SHA256(),
-            length=32,
-            salt=salt,
-            iterations=_KEY_WRAP_ITERATIONS,
-        )
-        return base64.urlsafe_b64encode(kdf.derive(password.encode("utf-8")))
-
-    def _load_or_create_key(self, password):
+    def _load_or_create_key(self):
         if self.key_file.exists():
             with open(self.key_file, 'rb') as f:
-                raw = f.read()
-            salt, encrypted_key = raw[:16], raw[16:]
-            wrapping_key = self._derive_wrapping_key(password, salt)
-            wrapper = Fernet(wrapping_key)
-            try:
-                return wrapper.decrypt(encrypted_key)
-            except InvalidToken:
-                raise ValueError("Неверный пароль сервера: не удалось расшифровать secret.key")
+                return f.read()
         else:
-            salt = os.urandom(16)
-            data_key = Fernet.generate_key()
-            wrapping_key = self._derive_wrapping_key(password, salt)
-            wrapper = Fernet(wrapping_key)
-            encrypted_key = wrapper.encrypt(data_key)
+            key = Fernet.generate_key()
             with open(self.key_file, 'wb') as f:
-                f.write(salt + encrypted_key)
-            return data_key
+                f.write(key)
+            return key
 
     def encrypt_message(self, message):
         return self.cipher.encrypt(message.encode()).decode()
@@ -111,21 +88,3 @@ class CryptoManager:
 
     def decrypt_file_bytes(self, token):
         return self.cipher.decrypt(token)
-
-    def read_encrypted_file(self, filepath):
-        chunks = []
-        with open(filepath, "rb") as f:
-            while True:
-                length_prefix = f.read(4)
-                if not length_prefix:
-                    break
-                chunk_len = int.from_bytes(length_prefix, "big")
-                encrypted_chunk = f.read(chunk_len)
-                chunks.append(self.cipher.decrypt(encrypted_chunk))
-        return b"".join(chunks)
-
-    def write_encrypted_file(self, filepath, data, chunk_size=1024 * 1024):
-        with open(filepath, "wb") as f:
-            for i in range(0, len(data), chunk_size):
-                encrypted_chunk = self.cipher.encrypt(data[i:i + chunk_size])
-                f.write(len(encrypted_chunk).to_bytes(4, "big") + encrypted_chunk)
