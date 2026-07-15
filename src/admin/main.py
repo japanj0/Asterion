@@ -6,6 +6,9 @@ import sqlite3
 import threading
 import socket
 import hashlib
+import time
+import base64
+import shutil
 from datetime import datetime
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -14,7 +17,7 @@ from crypto import CryptoManager
 
 os.makedirs("admin", exist_ok=True)
 os.makedirs("database", exist_ok=True)
-
+os.makedirs("files", exist_ok=True)
 
 def get_local_ip():
     try:
@@ -30,10 +33,8 @@ def get_local_ip():
         except:
             return "127.0.0.1"
 
-
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
-
 
 def generate_self_signed_cert():
     from cryptography import x509
@@ -62,79 +63,140 @@ def generate_self_signed_cert():
         f.write(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
                                   serialization.NoEncryption()))
 
-
 crypto = CryptoManager()
-
 
 class DatabaseManager:
     def __init__(self):
         self.conn = sqlite3.connect("database/messages.db", check_same_thread=False)
         self.cursor = self.conn.cursor()
-        self.cursor.execute('''
-            CREATE TABLE IF NOT EXISTS messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_type TEXT,
-                from_user TEXT,
-                to_user TEXT,
-                message TEXT,
-                timestamp TEXT
-            )
-        ''')
-        self.conn.commit()
+        self.lock = threading.Lock()
+        with self.lock:
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS messages (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_type TEXT,
+                    from_user TEXT,
+                    to_user TEXT,
+                    message TEXT,
+                    timestamp TEXT
+                )
+            ''')
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS files (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_type TEXT,
+                    from_user TEXT,
+                    to_user TEXT,
+                    filename TEXT,
+                    filepath TEXT,
+                    filesize INTEGER,
+                    timestamp TEXT
+                )
+            ''')
+            self.conn.commit()
 
     def save_message(self, chat_type, from_user, to_user, encrypted_message):
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        self.cursor.execute(
-            "INSERT INTO messages (chat_type, from_user, to_user, message, timestamp) VALUES (?, ?, ?, ?, ?)",
-            (chat_type, from_user, to_user, encrypted_message, timestamp)
-        )
-        self.conn.commit()
-        return timestamp
+        with self.lock:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.cursor.execute(
+                "INSERT INTO messages (chat_type, from_user, to_user, message, timestamp) VALUES (?, ?, ?, ?, ?)",
+                (chat_type, from_user, to_user, encrypted_message, timestamp)
+            )
+            self.conn.commit()
+            return timestamp
+
+    def save_file(self, chat_type, from_user, to_user, filename, filepath, filesize):
+        with self.lock:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.cursor.execute(
+                "INSERT INTO files (chat_type, from_user, to_user, filename, filepath, filesize, timestamp) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (chat_type, from_user, to_user, filename, filepath, filesize, timestamp)
+            )
+            self.conn.commit()
+            return timestamp
 
     def get_general_messages(self):
-        self.cursor.execute(
-            "SELECT from_user, to_user, message, timestamp FROM messages WHERE chat_type='general' ORDER BY timestamp"
-        )
-        return self.cursor.fetchall()
+        with self.lock:
+            self.cursor.execute(
+                "SELECT from_user, to_user, message, timestamp FROM messages WHERE chat_type='general' ORDER BY timestamp"
+            )
+            return self.cursor.fetchall()
+
+    def get_general_files(self):
+        with self.lock:
+            self.cursor.execute(
+                "SELECT from_user, to_user, filename, filepath, filesize, timestamp FROM files WHERE chat_type='general' ORDER BY timestamp"
+            )
+            return self.cursor.fetchall()
 
     def get_private_messages(self, user1, user2):
-        self.cursor.execute(
-            """SELECT from_user, to_user, message, timestamp FROM messages 
-               WHERE chat_type='private' AND ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?))
-               ORDER BY timestamp""",
-            (user1, user2, user2, user1)
-        )
-        return self.cursor.fetchall()
+        with self.lock:
+            self.cursor.execute(
+                """SELECT from_user, to_user, message, timestamp FROM messages 
+                   WHERE chat_type='private' AND ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?))
+                   ORDER BY timestamp""",
+                (user1, user2, user2, user1)
+            )
+            return self.cursor.fetchall()
+
+    def get_private_files(self, user1, user2):
+        with self.lock:
+            self.cursor.execute(
+                """SELECT from_user, to_user, filename, filepath, filesize, timestamp FROM files 
+                   WHERE chat_type='private' AND ((from_user=? AND to_user=?) OR (from_user=? AND to_user=?))
+                   ORDER BY timestamp""",
+                (user1, user2, user2, user1)
+            )
+            return self.cursor.fetchall()
 
     def get_all_messages_for_user(self, username):
-        self.cursor.execute(
-            """SELECT chat_type, from_user, to_user, message, timestamp FROM messages 
-               WHERE chat_type='general' OR (chat_type='private' AND (to_user=? OR from_user=?))
-               ORDER BY timestamp""",
-            (username, username)
-        )
-        return self.cursor.fetchall()
+        with self.lock:
+            self.cursor.execute(
+                """SELECT chat_type, from_user, to_user, message, timestamp FROM messages 
+                   WHERE chat_type='general' OR (chat_type='private' AND (to_user=? OR from_user=?))
+                   ORDER BY timestamp""",
+                (username, username)
+            )
+            return self.cursor.fetchall()
+
+    def get_all_files_for_user(self, username):
+        with self.lock:
+            self.cursor.execute(
+                """SELECT chat_type, from_user, to_user, filename, filepath, filesize, timestamp FROM files 
+                   WHERE chat_type='general' OR (chat_type='private' AND (to_user=? OR from_user=?))
+                   ORDER BY timestamp""",
+                (username, username)
+            )
+            return self.cursor.fetchall()
 
     def get_all_general_messages(self):
-        self.cursor.execute(
-            "SELECT from_user, to_user, message, timestamp FROM messages WHERE chat_type='general' ORDER BY timestamp"
-        )
-        return self.cursor.fetchall()
+        with self.lock:
+            self.cursor.execute(
+                "SELECT from_user, to_user, message, timestamp FROM messages WHERE chat_type='general' ORDER BY timestamp"
+            )
+            return self.cursor.fetchall()
 
     def get_all_users_with_private_chat(self):
-        self.cursor.execute(
-            """SELECT DISTINCT from_user FROM messages 
-               WHERE chat_type='private' AND to_user='Director' AND from_user != 'Director'
-               UNION
-               SELECT DISTINCT to_user FROM messages 
-               WHERE chat_type='private' AND from_user='Director' AND to_user != 'Director'
-               ORDER BY from_user"""
-        )
-        return [row[0] for row in self.cursor.fetchall()]
+        with self.lock:
+            self.cursor.execute(
+                """SELECT DISTINCT from_user FROM messages 
+                   WHERE chat_type='private' AND to_user='Director' AND from_user != 'Director'
+                   UNION
+                   SELECT DISTINCT to_user FROM messages 
+                   WHERE chat_type='private' AND from_user='Director' AND to_user != 'Director'
+                   ORDER BY from_user"""
+            )
+            return [row[0] for row in self.cursor.fetchall()]
 
+    def get_file_by_name_and_sender(self, filename, from_user, to_user, chat_type):
+        with self.lock:
+            self.cursor.execute(
+                "SELECT id, filepath, filesize FROM files WHERE filename=? AND from_user=? AND to_user=? AND chat_type=?",
+                (filename, from_user, to_user, chat_type)
+            )
+            return self.cursor.fetchone()
 
 db = DatabaseManager()
-
 
 class ServerThread(QThread):
     message_received = pyqtSignal(str, str, str, str)
@@ -150,6 +212,7 @@ class ServerThread(QThread):
         self.clients = {}
         self.running = True
         self.server_password_hash = hash_password(server_password)
+        self.file_receives = {}
 
     def run(self):
         if not os.path.exists("admin/server.crt") or not os.path.exists("admin/server.key"):
@@ -260,6 +323,116 @@ class ServerThread(QThread):
                     elif packet_type == 'stop_screen':
                         self.stop_screen_requested.emit(username)
 
+                    elif packet_type == 'file_start':
+                        to_user = packet.get('to')
+                        filename = packet.get('filename')
+                        filesize = packet.get('filesize')
+                        total_chunks = packet.get('total_chunks')
+                        chat_type = packet.get('chat_type')
+                        file_id = packet.get('file_id')
+                        if file_id in self.file_receives:
+                            self.file_receives[file_id]['file'].close()
+                            del self.file_receives[file_id]
+                        safe_filename = f"{int(time.time())}_{username}_{filename}"
+                        filepath = os.path.join("files", safe_filename)
+                        f = open(filepath, "wb")
+                        self.file_receives[file_id] = {
+                            'file': f,
+                            'filename': filename,
+                            'safe_filename': safe_filename,
+                            'filepath': filepath,
+                            'filesize': filesize,
+                            'chat_type': chat_type,
+                            'from_user': username,
+                            'to_user': to_user,
+                            'total_chunks': total_chunks,
+                            'received_chunks': 0
+                        }
+                        print(f"[FILE] Начало приёма {filename} от {username}")
+
+                    elif packet_type == 'file_chunk':
+                        file_id = packet.get('file_id')
+                        chunk_index = packet.get('chunk_index')
+                        chunk_data_b64 = packet.get('data')
+                        if file_id in self.file_receives:
+                            try:
+                                chunk_data = base64.b64decode(chunk_data_b64)
+                                self.file_receives[file_id]['file'].write(chunk_data)
+                                self.file_receives[file_id]['received_chunks'] += 1
+                            except Exception as e:
+                                print(f"Ошибка записи чанка: {e}")
+
+                    elif packet_type == 'file_end':
+                        file_id = packet.get('file_id')
+                        if file_id in self.file_receives:
+                            info = self.file_receives[file_id]
+                            info['file'].close()
+                            chat_type = info['chat_type']
+                            from_user = info['from_user']
+                            to_user = info['to_user']
+                            filename = info['filename']
+                            filepath = info['filepath']
+                            filesize = info['filesize']
+                            db.save_file(chat_type, from_user, to_user, filename, filepath, filesize)
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            print(f"[FILE] Файл {filename} сохранён в {filepath}")
+                            del self.file_receives[file_id]
+
+                            notify_data = {
+                                'type': 'file_notify',
+                                'from': from_user,
+                                'filename': filename,
+                                'filesize': filesize,
+                                'chat_type': chat_type,
+                                'timestamp': timestamp,
+                                'to': to_user
+                            }
+                            if chat_type == 'general':
+                                for user, info in self.clients.items():
+                                    try:
+                                        info['socket'].send(json.dumps(notify_data).encode())
+                                    except:
+                                        pass
+                            else:
+                                recipients = [from_user, to_user]
+                                for user in recipients:
+                                    if user in self.clients:
+                                        try:
+                                            self.clients[user]['socket'].send(json.dumps(notify_data).encode())
+                                        except:
+                                            pass
+
+                    elif packet_type == 'file_request':
+                        filename = packet.get('filename')
+                        from_user = packet.get('from_user')
+                        chat_type = packet.get('chat_type')
+                        to_user = packet.get('to_user')
+                        print(f"[FILE] Запрос на скачивание {filename} от {username} (отправитель {from_user})")
+                        file_info = db.get_file_by_name_and_sender(filename, from_user, to_user, chat_type)
+                        if file_info:
+                            file_id_db, filepath, filesize = file_info
+                            if os.path.exists(filepath):
+                                chunk_size = 1024 * 1024
+                                total_chunks = (filesize + chunk_size - 1) // chunk_size
+                                file_id_download = f"download_{int(time.time())}_{from_user}_{filename}"
+                                with open(filepath, "rb") as f:
+                                    for i in range(total_chunks):
+                                        data = f.read(chunk_size)
+                                        data_b64 = base64.b64encode(data).decode()
+                                        packet = {
+                                            'type': 'file_download_chunk',
+                                            'file_id': file_id_download,
+                                            'filename': filename,
+                                            'chunk_index': i,
+                                            'total_chunks': total_chunks,
+                                            'data': data_b64
+                                        }
+                                        client_socket.send(json.dumps(packet).encode())
+                            else:
+                                print(f"[FILE] Файл {filepath} не найден")
+                        else:
+                            print(f"[FILE] Файл {filename} не найден в БД")
+
                 except json.JSONDecodeError:
                     continue
                 except Exception as e:
@@ -289,22 +462,38 @@ class ServerThread(QThread):
     def send_history(self, username):
         if username in self.clients:
             try:
-                history = db.get_all_messages_for_user(username)
+                history_messages = db.get_all_messages_for_user(username)
+                history_files = db.get_all_files_for_user(username)
                 history_data = []
-                for chat_type, from_user, to_user, msg, ts in history:
+                for chat_type, from_user, to_user, msg, ts in history_messages:
                     decrypted = crypto.decrypt_message(msg)
                     if chat_type == 'general':
                         target = 'general'
                     else:
                         target = to_user if from_user != username else from_user
                     history_data.append({
+                        'type': 'message',
                         'chat_type': chat_type,
                         'from': from_user,
                         'to': target,
                         'message': decrypted,
                         'timestamp': ts
                     })
-
+                for chat_type, from_user, to_user, filename, filepath, filesize, ts in history_files:
+                    if chat_type == 'general':
+                        target = 'general'
+                    else:
+                        target = to_user if from_user != username else from_user
+                    history_data.append({
+                        'type': 'file',
+                        'chat_type': chat_type,
+                        'from': from_user,
+                        'to': target,
+                        'filename': filename,
+                        'filesize': filesize,
+                        'timestamp': ts
+                    })
+                history_data.sort(key=lambda x: x['timestamp'])
                 if history_data:
                     self.clients[username]['socket'].send(json.dumps({
                         'type': 'history',
@@ -325,7 +514,6 @@ class ServerThread(QThread):
         except:
             pass
         self.server.close()
-
 
 class IpDisplayWidget(QWidget):
     def __init__(self, parent=None):
@@ -357,7 +545,6 @@ class IpDisplayWidget(QWidget):
     def update_ip(self):
         ip = get_local_ip()
         self.ip_label.setText(ip)
-
 
 class ServerPasswordDialog(QDialog):
     def __init__(self, parent=None):
@@ -444,7 +631,6 @@ class ServerPasswordDialog(QDialog):
             return pwd1
         return None
 
-
 class MainWindow(QMainWindow):
     def __init__(self, server_password):
         super().__init__()
@@ -453,6 +639,7 @@ class MainWindow(QMainWindow):
         self.current_chat = "general"
         self.current_screen_user = None
         self.private_chats = {}
+        self.is_processing_link = False
         self.init_ui()
         self.load_general_history()
         self.load_private_chats()
@@ -465,14 +652,23 @@ class MainWindow(QMainWindow):
             self.chat_tabs.addTab(chat_widget, username)
             self.private_chats[username] = chat_widget
 
-            history = db.get_private_messages("Director", username)
-            for from_user, to_user, msg, ts in history:
+            history_messages = db.get_private_messages("Director", username)
+            history_files = db.get_private_files("Director", username)
+            combined = []
+            for from_user, to_user, msg, ts in history_messages:
                 try:
                     decrypted = crypto.decrypt_message(msg)
                     display_name = "Я" if from_user == "Director" else from_user
-                    chat_widget.chat_display.append(f"[{ts}] {display_name}: {decrypted}")
+                    combined.append((ts, f"[{ts}] {display_name}: {decrypted}"))
                 except:
-                    chat_widget.chat_display.append(f"[{ts}] {from_user}: [Зашифровано]")
+                    combined.append((ts, f"[{ts}] {from_user}: [Зашифровано]"))
+            for from_user, to_user, filename, filepath, filesize, ts in history_files:
+                display_name = "Я" if from_user == "Director" else from_user
+                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type=private&to={username}">Скачать</a>'
+                combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}"))
+            combined.sort(key=lambda x: x[0])
+            for _, line in combined:
+                chat_widget.chat_display.append(line)
 
     def init_ui(self):
         self.setWindowTitle("Asterion - Директор")
@@ -502,11 +698,15 @@ class MainWindow(QMainWindow):
             QListWidget::item:hover {
                 background-color: #4a4a5a;
             }
-            QTextEdit {
+            QTextBrowser {
                 background-color: #3d3d4a;
                 border: none;
                 color: #e0e0e0;
                 font-size: 14px;
+            }
+            QTextBrowser a {
+                color: #4a9a4a;
+                text-decoration: underline;
             }
             QLineEdit {
                 background-color: #3d3d4a;
@@ -607,16 +807,26 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(right_panel)
 
     def load_general_history(self):
+        self.general_chat.chat_display.clear()
+        combined = []
         all_messages = db.get_all_general_messages()
         for from_user, to_user, msg, ts in all_messages:
             try:
                 decrypted = crypto.decrypt_message(msg)
                 if from_user == "Director":
-                    self.general_chat.chat_display.append(f"[{ts}] Я: {decrypted}")
+                    combined.append((ts, f"[{ts}] Я: {decrypted}"))
                 else:
-                    self.general_chat.chat_display.append(f"[{ts}] {from_user}: {decrypted}")
+                    combined.append((ts, f"[{ts}] {from_user}: {decrypted}"))
             except:
-                self.general_chat.chat_display.append(f"[{ts}] {from_user}: [Зашифровано]")
+                combined.append((ts, f"[{ts}] {from_user}: [Зашифровано]"))
+        all_files = db.get_general_files()
+        for from_user, to_user, filename, filepath, filesize, ts in all_files:
+            display_name = "Я" if from_user == "Director" else from_user
+            link = f'<a href="download://?filename={filename}&from={from_user}&chat_type=general&to=general">Скачать</a>'
+            combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}"))
+        combined.sort(key=lambda x: x[0])
+        for _, line in combined:
+            self.general_chat.chat_display.append(line)
 
     def create_chat_widget(self):
         widget = QWidget()
@@ -625,10 +835,10 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
         widget.setLayout(layout)
 
-        chat_display = QTextEdit()
-        chat_display.setReadOnly(True)
+        chat_display = QTextBrowser()
+        chat_display.setOpenExternalLinks(False)
         chat_display.setStyleSheet("""
-            QTextEdit {
+            QTextBrowser {
                 background-color: #3d3d4a;
                 border: 1px solid #4a4a5a;
                 border-radius: 6px;
@@ -636,7 +846,12 @@ class MainWindow(QMainWindow):
                 color: #e0e0e0;
                 font-size: 14px;
             }
+            QTextBrowser a {
+                color: #4a9a4a;
+                text-decoration: underline;
+            }
         """)
+        chat_display.anchorClicked.connect(self.on_link_clicked)
         layout.addWidget(chat_display)
 
         input_layout = QHBoxLayout()
@@ -657,6 +872,25 @@ class MainWindow(QMainWindow):
             }
         """)
         message_input.returnPressed.connect(lambda: self.send_message(message_input))
+
+        attach_btn = QPushButton("📎")
+        attach_btn.setFixedSize(38, 38)
+        attach_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a6a8a;
+                border: none;
+                border-radius: 6px;
+                color: white;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #5a7a9a;
+            }
+            QPushButton:pressed {
+                background-color: #3a5a7a;
+            }
+        """)
+        attach_btn.clicked.connect(self.on_attach_clicked)
 
         send_btn = QPushButton("Тык")
         send_btn.setFixedSize(80, 38)
@@ -679,12 +913,125 @@ class MainWindow(QMainWindow):
         send_btn.clicked.connect(lambda: self.send_message(message_input))
 
         input_layout.addWidget(message_input)
+        input_layout.addWidget(attach_btn)
         input_layout.addWidget(send_btn)
         layout.addLayout(input_layout)
 
         widget.chat_display = chat_display
         widget.message_input = message_input
         return widget
+
+    def on_link_clicked(self, url):
+        if self.is_processing_link:
+            return
+        self.is_processing_link = True
+        try:
+            if url.scheme() == "download":
+                params = {}
+                for part in url.query().split('&'):
+                    if '=' in part:
+                        k, v = part.split('=', 1)
+                        params[k] = v
+                filename = params.get('filename')
+                from_user = params.get('from')
+                chat_type = params.get('chat_type')
+                to_user = params.get('to')
+                if filename and from_user and chat_type and to_user:
+                    current_widget = self.chat_tabs.currentWidget()
+                    if current_widget:
+                        chat_display = current_widget.chat_display
+                        saved_html = chat_display.toHtml()
+                        chat_display.setUpdatesEnabled(False)
+                        save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", filename)
+                        chat_display.setUpdatesEnabled(True)
+                        if not save_path:
+                            if chat_display.toHtml() == "<html><head/><body/></html>":
+                                chat_display.setHtml(saved_html)
+                            return
+                        file_info = db.get_file_by_name_and_sender(filename, from_user, to_user, chat_type)
+                        if file_info:
+                            _, filepath, _ = file_info
+                            if os.path.exists(filepath):
+                                try:
+                                    shutil.copy2(filepath, save_path)
+                                    QMessageBox.information(self, "Успех", f"Файл {filename} сохранён")
+                                except Exception as e:
+                                    QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл: {str(e)}")
+                            else:
+                                QMessageBox.critical(self, "Ошибка", "Файл не найден на сервере")
+                        else:
+                            QMessageBox.critical(self, "Ошибка", "Файл не найден в базе данных")
+                        if chat_display.toHtml() == "<html><head/><body/></html>":
+                            chat_display.setHtml(saved_html)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при скачивании: {str(e)}")
+        finally:
+            self.is_processing_link = False
+
+    def on_attach_clicked(self):
+        file_dialog = QFileDialog()
+        file_path, _ = file_dialog.getOpenFileName(self, "Выберите файл для отправки")
+        if not file_path:
+            return
+        filename = os.path.basename(file_path)
+        forbidden_extensions = ['.exe', '.appimage', '.bin', '.msi', '.dmg', '.pkg', '.deb', '.rpm']
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in forbidden_extensions:
+            QMessageBox.warning(self, "Ошибка", "Запрещённый тип файла")
+            return
+        filesize = os.path.getsize(file_path)
+        if filesize > 500 * 1024 * 1024:
+            QMessageBox.warning(self, "Ошибка", "Файл превышает 500 МБ")
+            return
+        current_tab = self.chat_tabs.currentWidget()
+        tab_text = self.chat_tabs.tabText(self.chat_tabs.currentIndex())
+        if tab_text == "Общий чат":
+            chat_type = "general"
+            to_user = "general"
+        else:
+            chat_type = "private"
+            to_user = tab_text
+        self.send_file(file_path, filename, chat_type, to_user)
+
+    def send_file(self, file_path, filename, chat_type, to_user):
+        try:
+            safe_filename = f"{int(time.time())}_Director_{filename}"
+            filepath = os.path.join("files", safe_filename)
+            shutil.copy2(file_path, filepath)
+            filesize = os.path.getsize(file_path)
+            db.save_file(chat_type, "Director", to_user, filename, filepath, filesize)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+            link = f'<a href="download://?filename={filename}&from=Director&chat_type={chat_type}&to={to_user}">Скачать</a>'
+            if chat_type == "general":
+                self.general_chat.chat_display.append(f"[{timestamp}] Я: [Файл] {filename} ({filesize} байт) {link}")
+            else:
+                if to_user in self.private_chats:
+                    self.private_chats[to_user].chat_display.append(f"[{timestamp}] Я: [Файл] {filename} ({filesize} байт) {link}")
+
+            notify_data = {
+                'type': 'file_notify',
+                'from': 'Director',
+                'filename': filename,
+                'filesize': filesize,
+                'chat_type': chat_type,
+                'timestamp': timestamp,
+                'to': to_user
+            }
+            if chat_type == 'general':
+                for user, info in self.server_thread.clients.items():
+                    try:
+                        info['socket'].send(json.dumps(notify_data).encode())
+                    except:
+                        pass
+            else:
+                if to_user in self.server_thread.clients:
+                    try:
+                        self.server_thread.clients[to_user]['socket'].send(json.dumps(notify_data).encode())
+                    except:
+                        pass
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось отправить файл: {str(e)}")
 
     def start_server(self):
         self.server_thread = ServerThread(self.server_password)
@@ -753,14 +1100,23 @@ class MainWindow(QMainWindow):
             self.chat_tabs.addTab(chat_widget, username)
             self.private_chats[username] = chat_widget
 
-            history = db.get_private_messages("Director", username)
-            for from_user, to_user, msg, ts in history:
+            history_messages = db.get_private_messages("Director", username)
+            history_files = db.get_private_files("Director", username)
+            combined = []
+            for from_user, to_user, msg, ts in history_messages:
                 try:
                     decrypted = crypto.decrypt_message(msg)
                     display_name = "Я" if from_user == "Director" else from_user
-                    chat_widget.chat_display.append(f"[{ts}] {display_name}: {decrypted}")
+                    combined.append((ts, f"[{ts}] {display_name}: {decrypted}"))
                 except:
-                    chat_widget.chat_display.append(f"[{ts}] {from_user}: [Зашифровано]")
+                    combined.append((ts, f"[{ts}] {from_user}: [Зашифровано]"))
+            for from_user, to_user, filename, filepath, filesize, ts in history_files:
+                display_name = "Я" if from_user == "Director" else from_user
+                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type=private&to={username}">Скачать</a>'
+                combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}"))
+            combined.sort(key=lambda x: x[0])
+            for _, line in combined:
+                chat_widget.chat_display.append(line)
 
         self.server_thread.send_history(username)
 
@@ -958,7 +1314,6 @@ class MainWindow(QMainWindow):
             self.server_thread.wait()
         event.accept()
 
-
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
@@ -983,6 +1338,5 @@ def main():
     window = MainWindow(password)
     window.show()
     sys.exit(app.exec())
-
 
 main()

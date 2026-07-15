@@ -5,6 +5,7 @@ import socket
 import ssl
 import time
 import base64
+import os
 from datetime import datetime
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -86,6 +87,8 @@ class ClientThread(QThread):
     screen_requested = pyqtSignal()
     stop_screen_requested = pyqtSignal()
     history_received = pyqtSignal(list)
+    file_notify_received = pyqtSignal(str, str, str, int, str)
+    file_download_chunk_received = pyqtSignal(str, int, int, bytes)
     connection_error = pyqtSignal(str)
 
     def __init__(self, server_ip, username, password, port=5555):
@@ -104,6 +107,7 @@ class ClientThread(QThread):
         self.port = port
         self.socket = None
         self.running = True
+        self.download_buffers = {}
 
     def run(self):
         try:
@@ -172,6 +176,22 @@ class ClientThread(QThread):
                         messages = packet.get('messages', [])
                         self.history_received.emit(messages)
 
+                    elif packet_type == 'file_notify':
+                        from_user = packet.get('from')
+                        filename = packet.get('filename')
+                        chat_type = packet.get('chat_type')
+                        filesize = packet.get('filesize')
+                        timestamp = packet.get('timestamp')
+                        self.file_notify_received.emit(from_user, filename, chat_type, filesize, timestamp)
+
+                    elif packet_type == 'file_download_chunk':
+                        file_id = packet.get('file_id')
+                        chunk_index = packet.get('chunk_index')
+                        total_chunks = packet.get('total_chunks')
+                        data_b64 = packet.get('data')
+                        chunk_data = base64.b64decode(data_b64)
+                        self.file_download_chunk_received.emit(file_id, chunk_index, total_chunks, chunk_data)
+
                 except json.JSONDecodeError as e:
                     self.connection_error.emit(f"Ошибка декодирования JSON: {str(e)}")
                 except socket.timeout:
@@ -213,6 +233,22 @@ class ClientThread(QThread):
                     'type': 'screen',
                     'to': to_user,
                     'data': screen_data
+                }
+                self.socket.send(json.dumps(packet).encode())
+                return True
+            except:
+                return False
+        return False
+
+    def request_file(self, filename, from_user, chat_type, to_user):
+        if self.socket:
+            try:
+                packet = {
+                    'type': 'file_request',
+                    'filename': filename,
+                    'from_user': from_user,
+                    'chat_type': chat_type,
+                    'to_user': to_user
                 }
                 self.socket.send(json.dumps(packet).encode())
                 return True
@@ -363,6 +399,8 @@ class MainWindow(QMainWindow):
         self.screen_timer = None
         self.screen_active = False
         self.sct = mss.MSS()
+        self.download_buffers = {}
+        self.is_processing_download = False
         self.init_ui()
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
         self.connect_to_server()
@@ -374,11 +412,15 @@ class MainWindow(QMainWindow):
             QMainWindow {
                 background-color: #2d2d3a;
             }
-            QTextEdit {
+            QTextBrowser {
                 background-color: #3d3d4a;
                 border: none;
                 color: #e0e0e0;
                 font-size: 14px;
+            }
+            QTextBrowser a {
+                color: #4a9a4a;
+                text-decoration: underline;
             }
             QLineEdit {
                 background-color: #3d3d4a;
@@ -448,10 +490,10 @@ class MainWindow(QMainWindow):
         layout.setSpacing(8)
         widget.setLayout(layout)
 
-        chat_display = QTextEdit()
-        chat_display.setReadOnly(True)
+        chat_display = QTextBrowser()
+        chat_display.setOpenExternalLinks(False)
         chat_display.setStyleSheet("""
-            QTextEdit {
+            QTextBrowser {
                 background-color: #3d3d4a;
                 border: 1px solid #4a4a5a;
                 border-radius: 6px;
@@ -459,7 +501,12 @@ class MainWindow(QMainWindow):
                 color: #e0e0e0;
                 font-size: 14px;
             }
+            QTextBrowser a {
+                color: #4a9a4a;
+                text-decoration: underline;
+            }
         """)
+        chat_display.anchorClicked.connect(self.on_link_clicked)
         layout.addWidget(chat_display)
 
         input_layout = QHBoxLayout()
@@ -480,6 +527,25 @@ class MainWindow(QMainWindow):
             }
         """)
         message_input.returnPressed.connect(lambda: self.send_message(message_input))
+
+        attach_btn = QPushButton("📎")
+        attach_btn.setFixedSize(38, 38)
+        attach_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a6a8a;
+                border: none;
+                border-radius: 6px;
+                color: white;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #5a7a9a;
+            }
+            QPushButton:pressed {
+                background-color: #3a5a7a;
+            }
+        """)
+        attach_btn.clicked.connect(self.on_attach_clicked)
 
         send_btn = QPushButton("Тык")
         send_btn.setFixedSize(80, 38)
@@ -502,12 +568,165 @@ class MainWindow(QMainWindow):
         send_btn.clicked.connect(lambda: self.send_message(message_input))
 
         input_layout.addWidget(message_input)
+        input_layout.addWidget(attach_btn)
         input_layout.addWidget(send_btn)
         layout.addLayout(input_layout)
 
         widget.chat_display = chat_display
         widget.message_input = message_input
         return widget
+
+    def on_link_clicked(self, url):
+        if self.is_processing_download:
+            return
+        self.is_processing_download = True
+        try:
+            if url.scheme() == "download":
+                params = {}
+                for part in url.query().split('&'):
+                    if '=' in part:
+                        k, v = part.split('=', 1)
+                        params[k] = v
+                filename = params.get('filename')
+                from_user = params.get('from')
+                chat_type = params.get('chat_type')
+                to_user = params.get('to')
+                if filename and from_user and chat_type and to_user:
+                    current_widget = self.chat_tabs.currentWidget()
+                    if current_widget:
+                        chat_display = current_widget.chat_display
+                        saved_html = chat_display.toHtml()
+                        chat_display.setUpdatesEnabled(False)
+                        save_path, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", filename)
+                        chat_display.setUpdatesEnabled(True)
+                        if not save_path:
+                            if chat_display.toHtml() == "<html><head/><body/></html>":
+                                chat_display.setHtml(saved_html)
+                            return
+                        self.download_file(filename, from_user, chat_type, to_user, save_path)
+                        if chat_display.toHtml() == "<html><head/><body/></html>":
+                            chat_display.setHtml(saved_html)
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при скачивании: {str(e)}")
+        finally:
+            self.is_processing_download = False
+
+    def download_file(self, filename, from_user, chat_type, to_user, save_path):
+        self.download_buffers[save_path] = {
+            'file_id': None,
+            'chunks': {},
+            'total_chunks': 0,
+            'filename': filename
+        }
+        self.client_thread.request_file(filename, from_user, chat_type, to_user)
+        self.download_progress = QProgressDialog(f"Скачивание {filename}...", "Отмена", 0, 100, self)
+        self.download_progress.setWindowModality(Qt.WindowModality.WindowModal)
+        self.download_progress.setMinimumDuration(0)
+        self.download_progress.setValue(0)
+        self.download_progress.canceled.connect(lambda: self.cancel_download(save_path))
+        self.download_progress.show()
+
+    def cancel_download(self, save_path):
+        if save_path in self.download_buffers:
+            del self.download_buffers[save_path]
+        self.download_progress.close()
+
+    def on_file_download_chunk(self, file_id, chunk_index, total_chunks, chunk_data):
+        for save_path, info in self.download_buffers.items():
+            if info['file_id'] is None:
+                info['file_id'] = file_id
+                info['total_chunks'] = total_chunks
+            if info['file_id'] == file_id:
+                info['chunks'][chunk_index] = chunk_data
+                progress = int((len(info['chunks']) / total_chunks) * 100)
+                self.download_progress.setValue(progress)
+                if len(info['chunks']) == total_chunks:
+                    self.download_progress.setValue(100)
+                    try:
+                        with open(save_path, "wb") as f:
+                            for i in range(total_chunks):
+                                f.write(info['chunks'][i])
+                        QMessageBox.information(self, "Успех", f"Файл {info['filename']} сохранён")
+                    except Exception as e:
+                        QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл: {str(e)}")
+                    self.download_progress.close()
+                    del self.download_buffers[save_path]
+
+    def on_attach_clicked(self):
+        file_dialog = QFileDialog()
+        file_path, _ = file_dialog.getOpenFileName(self, "Выберите файл для отправки")
+        if not file_path:
+            return
+        filename = os.path.basename(file_path)
+        forbidden_extensions = ['.exe', '.appimage', '.bin', '.msi', '.dmg', '.pkg', '.deb', '.rpm']
+        ext = os.path.splitext(filename)[1].lower()
+        if ext in forbidden_extensions:
+            QMessageBox.warning(self, "Ошибка", "Запрещённый тип файла")
+            return
+        filesize = os.path.getsize(file_path)
+        if filesize > 500 * 1024 * 1024:
+            QMessageBox.warning(self, "Ошибка", "Файл превышает 500 МБ")
+            return
+        current_tab = self.chat_tabs.currentWidget()
+        tab_text = self.chat_tabs.tabText(self.chat_tabs.currentIndex())
+        if tab_text == "Общий чат":
+            chat_type = "general"
+            to_user = "general"
+        else:
+            chat_type = "private"
+            to_user = tab_text
+        self.send_file(file_path, filename, chat_type, to_user)
+
+    def send_file(self, file_path, filename, chat_type, to_user):
+        chunk_size = 1024 * 1024
+        filesize = os.path.getsize(file_path)
+        total_chunks = (filesize + chunk_size - 1) // chunk_size
+        file_id = f"{int(time.time())}_{self.username}_{filename}"
+        progress = QProgressDialog(f"Отправка {filename}...", "Отмена", 0, total_chunks, self)
+        progress.setWindowModality(Qt.WindowModality.WindowModal)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+        try:
+            with open(file_path, "rb") as f:
+                for i in range(total_chunks):
+                    if progress.wasCanceled():
+                        break
+                    data = f.read(chunk_size)
+                    data_b64 = base64.b64encode(data).decode()
+                    packet = {
+                        'type': 'file_chunk',
+                        'file_id': file_id,
+                        'chunk_index': i,
+                        'data': data_b64
+                    }
+                    if i == 0:
+                        start_packet = {
+                            'type': 'file_start',
+                            'file_id': file_id,
+                            'filename': filename,
+                            'filesize': filesize,
+                            'total_chunks': total_chunks,
+                            'chat_type': chat_type,
+                            'to': to_user
+                        }
+                        self.client_thread.socket.send(json.dumps(start_packet).encode())
+                    self.client_thread.socket.send(json.dumps(packet).encode())
+                    progress.setValue(i + 1)
+                    QApplication.processEvents()
+                if not progress.wasCanceled():
+                    end_packet = {
+                        'type': 'file_end',
+                        'file_id': file_id,
+                        'filename': filename,
+                        'chat_type': chat_type,
+                        'to': to_user
+                    }
+                    self.client_thread.socket.send(json.dumps(end_packet).encode())
+                else:
+                    QMessageBox.information(self, "Отмена", "Отправка файла отменена")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Не удалось отправить файл: {str(e)}")
+        progress.close()
 
     def connect_to_server(self):
         self.client_thread = ClientThread(self.server_ip, self.username, self.password)
@@ -516,8 +735,18 @@ class MainWindow(QMainWindow):
         self.client_thread.screen_requested.connect(self.on_screen_requested)
         self.client_thread.stop_screen_requested.connect(self.on_stop_screen_requested)
         self.client_thread.history_received.connect(self.on_history_received)
+        self.client_thread.file_notify_received.connect(self.on_file_notify_received)
+        self.client_thread.file_download_chunk_received.connect(self.on_file_download_chunk)
         self.client_thread.connection_error.connect(self.on_connection_error)
         self.client_thread.start()
+
+    def on_file_notify_received(self, from_user, filename, chat_type, filesize, timestamp):
+        link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={self.username}">Скачать</a>'
+        msg = f"[{timestamp}] {from_user}: [Файл] {filename} ({filesize} байт) {link}"
+        if chat_type == "general":
+            self.general_chat.chat_display.append(msg)
+        else:
+            self.private_chat.chat_display.append(msg)
 
     def on_connection_error(self, error):
         self.close()
@@ -527,16 +756,28 @@ class MainWindow(QMainWindow):
 
     def on_history_received(self, messages):
         for msg in messages:
-            from_user = msg.get('from', 'Неизвестный')
-            to_user = msg.get('to', 'general')
-            message = msg.get('message', '')
-            timestamp = msg.get('timestamp', '')
-            chat_type = msg.get('chat_type', 'general')
-
-            if chat_type == 'general':
-                self.general_chat.chat_display.append(f"[{timestamp}] {from_user}: {message}")
-            else:
-                self.private_chat.chat_display.append(f"[{timestamp}] {from_user}: {message}")
+            if msg.get('type') == 'message':
+                from_user = msg.get('from', 'Неизвестный')
+                to_user = msg.get('to', 'general')
+                message = msg.get('message', '')
+                timestamp = msg.get('timestamp', '')
+                chat_type = msg.get('chat_type', 'general')
+                if chat_type == 'general':
+                    self.general_chat.chat_display.append(f"[{timestamp}] {from_user}: {message}")
+                else:
+                    self.private_chat.chat_display.append(f"[{timestamp}] {from_user}: {message}")
+            elif msg.get('type') == 'file':
+                from_user = msg.get('from', 'Неизвестный')
+                filename = msg.get('filename', '')
+                filesize = msg.get('filesize', 0)
+                timestamp = msg.get('timestamp', '')
+                chat_type = msg.get('chat_type', 'general')
+                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={self.username}">Скачать</a>'
+                line = f"[{timestamp}] {from_user}: [Файл] {filename} ({filesize} байт) {link}"
+                if chat_type == 'general':
+                    self.general_chat.chat_display.append(line)
+                else:
+                    self.private_chat.chat_display.append(line)
 
     def on_message_received(self, from_user, message, to_user):
         if to_user == "general":
