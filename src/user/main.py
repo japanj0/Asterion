@@ -48,9 +48,10 @@ class PacketReader:
 
 
 class AuthThread(QThread):
-    auth_success = pyqtSignal()
+    auth_success = pyqtSignal(object, str, str)
     auth_failed = pyqtSignal(str)
     connection_error = pyqtSignal(str)
+    pending_status = pyqtSignal()
 
     def __init__(self, server_ip, username, password, port=5555):
         super().__init__()
@@ -95,31 +96,54 @@ class AuthThread(QThread):
 
             try:
                 reader = PacketReader()
-                auth_response = None
-                while auth_response is None:
+                first_response = None
+                while first_response is None:
                     chunk = ssl_sock.recv(4096)
                     if not chunk:
                         break
                     reader.feed(chunk)
                     pkts = reader.pop_packets()
                     if pkts:
-                        auth_response = pkts[0]
+                        first_response = pkts[0]
 
-                if auth_response is None or auth_response.get('status') != 'success':
-                    error = auth_response.get('error', 'Неверный пароль') if auth_response else 'Ошибка авторизации'
-                    self.auth_failed.emit(error)
+                if first_response is None:
+                    self.auth_failed.emit("Сервер не ответил")
                     ssl_sock.close()
                     return
-            except:
-                self.auth_failed.emit("Ошибка авторизации")
+
+                status = first_response.get('status')
+                if status == 'success':
+                    self.auth_success.emit(ssl_sock, self.username, self.password)
+                    return
+                elif status == 'pending':
+                    self.pending_status.emit()
+                    while True:
+                        chunk = ssl_sock.recv(4096)
+                        if not chunk:
+                            break
+                        reader.feed(chunk)
+                        for pkt in reader.pop_packets():
+                            if pkt.get('type') == 'approved':
+                                self.auth_success.emit(ssl_sock, self.username, self.password)
+                                return
+                            elif pkt.get('type') == 'rejected':
+                                ssl_sock.close()
+                                self.auth_failed.emit("Заявка отклонена администратором")
+                                return
+                    self.auth_failed.emit("Таймаут ожидания одобрения")
+                    ssl_sock.close()
+                else:
+                    error = first_response.get('error', 'Неизвестная ошибка')
+                    self.auth_failed.emit(error)
+                    ssl_sock.close()
+            except Exception as e:
+                self.auth_failed.emit(f"Ошибка авторизации: {str(e)}")
                 ssl_sock.close()
                 return
 
-            ssl_sock.close()
-            self.auth_success.emit()
-
         except Exception as e:
             self.connection_error.emit(f"Ошибка подключения: {str(e)}")
+
 
 class ClientThread(QThread):
     message_received = pyqtSignal(str, str, str)
@@ -131,21 +155,11 @@ class ClientThread(QThread):
     file_download_chunk_received = pyqtSignal(str, int, int, bytes)
     connection_error = pyqtSignal(str)
 
-    def __init__(self, server_ip, username, password, port=5555):
+    def __init__(self, socket, username, password):
         super().__init__()
-        if ':' in server_ip:
-            parts = server_ip.split(':')
-            server_ip = parts[0]
-            try:
-                port = int(parts[1])
-            except:
-                port = 5555
-
-        self.server_ip = server_ip
+        self.socket = socket
         self.username = username
         self.password = password
-        self.port = port
-        self.socket = None
         self.running = True
         self.download_buffers = {}
         self.reader = PacketReader()
@@ -153,49 +167,6 @@ class ClientThread(QThread):
 
     def run(self):
         try:
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(10.0)
-            self.socket = context.wrap_socket(sock, server_hostname=self.server_ip)
-
-            try:
-                self.socket.connect((self.server_ip, self.port))
-            except socket.error as e:
-                self.connection_error.emit(f"Не удалось подключиться к {self.server_ip}:{self.port} - {str(e)}")
-                return
-
-            try:
-                send_packet(self.socket, {
-                    'username': self.username,
-                    'password': self.password
-                })
-            except socket.error as e:
-                self.connection_error.emit(f"Не удалось отправить данные авторизации - {str(e)}")
-                return
-
-            try:
-                auth_reader = PacketReader()
-                auth_response = None
-                while auth_response is None:
-                    chunk = self.socket.recv(4096)
-                    if not chunk:
-                        break
-                    auth_reader.feed(chunk)
-                    pkts = auth_reader.pop_packets()
-                    if pkts:
-                        auth_response = pkts[0]
-
-                if auth_response is None or auth_response.get('status') != 'success':
-                    error = auth_response.get('error', 'Неверный пароль') if auth_response else 'Ошибка авторизации'
-                    self.connection_error.emit(error)
-                    return
-            except:
-                self.connection_error.emit("Ошибка авторизации")
-                return
-
             while self.running:
                 try:
                     data = self.socket.recv(4096)
@@ -256,7 +227,7 @@ class ClientThread(QThread):
                     break
 
         except Exception as e:
-            self.connection_error.emit(f"Ошибка подключения: {str(e)}")
+            self.connection_error.emit(f"Ошибка: {str(e)}")
         finally:
             if self.socket:
                 try:
@@ -316,12 +287,16 @@ class ClientThread(QThread):
             except:
                 pass
 
+
 class LoginDialog(QDialog):
     def __init__(self):
         super().__init__()
         self.server_ip = ""
         self.username = ""
         self.password = ""
+        self.auth_thread = None
+        self.pending = False
+        self.socket = None
         self.init_ui()
 
     def init_ui(self):
@@ -405,6 +380,12 @@ class LoginDialog(QDialog):
         self.connect_btn.clicked.connect(self.on_connect)
         layout.addWidget(self.connect_btn)
 
+        self.status_label = QLabel("")
+        self.status_label.setStyleSheet("color: #ffaa00; font-size: 14px;")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.status_label.hide()
+        layout.addWidget(self.status_label)
+
         self.setLayout(layout)
 
     def on_connect(self):
@@ -418,19 +399,31 @@ class LoginDialog(QDialog):
 
         self.connect_btn.setEnabled(False)
         self.connect_btn.setText("Подключение...")
+        self.status_label.hide()
 
         self.auth_thread = AuthThread(self.server_ip, self.username, self.password)
         self.auth_thread.auth_success.connect(self.on_auth_success)
         self.auth_thread.auth_failed.connect(self.on_auth_failed)
         self.auth_thread.connection_error.connect(self.on_connection_error)
+        self.auth_thread.pending_status.connect(self.on_pending)
         self.auth_thread.start()
 
-    def on_auth_success(self):
+    def on_pending(self):
+        self.pending = True
+        self.connect_btn.setText("Ожидание одобрения...")
+        self.status_label.setText("Ожидание одобрения администратором...")
+        self.status_label.show()
+
+    def on_auth_success(self, sock, username, password):
+        self.socket = sock
+        self.username = username
+        self.password = password
         self.accept()
 
     def on_auth_failed(self, error):
         self.connect_btn.setEnabled(True)
         self.connect_btn.setText("Подключиться")
+        self.status_label.hide()
         QMessageBox.critical(self, "Ошибка авторизации",
                              f"{error}\nУбедитесь, что вы ввели правильный пароль сервера.")
         sys.exit(1)
@@ -438,13 +431,19 @@ class LoginDialog(QDialog):
     def on_connection_error(self, error):
         self.connect_btn.setEnabled(True)
         self.connect_btn.setText("Подключиться")
+        self.status_label.hide()
         QMessageBox.critical(self, "Ошибка подключения",
                              f"Не удалось подключиться:\nПроверьте:\n1. Запущен ли сервер\n2. Правильный IP-адрес\n3. Отключен ли брандмауэр")
+        sys.exit(1)
+
+    def get_socket_and_credentials(self):
+        return self.socket, self.username, self.password
+
 
 class MainWindow(QMainWindow):
-    def __init__(self, server_ip, username, password):
+    def __init__(self, sock, username, password):
         super().__init__()
-        self.server_ip = server_ip
+        self.sock = sock
         self.username = username
         self.password = password
         self.client_thread = None
@@ -455,7 +454,7 @@ class MainWindow(QMainWindow):
         self.is_processing_download = False
         self.init_ui()
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
-        self.connect_to_server()
+        self.start_client_thread()
 
     def init_ui(self):
         self.setWindowTitle(f"Asterion - {self.username}")
@@ -788,8 +787,8 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Ошибка", f"Не удалось отправить файл: {str(e)}")
         progress.close()
 
-    def connect_to_server(self):
-        self.client_thread = ClientThread(self.server_ip, self.username, self.password)
+    def start_client_thread(self):
+        self.client_thread = ClientThread(self.sock, self.username, self.password)
         self.client_thread.message_received.connect(self.on_message_received)
         self.client_thread.notification_received.connect(self.on_notification_received)
         self.client_thread.screen_requested.connect(self.on_screen_requested)
@@ -909,6 +908,7 @@ class MainWindow(QMainWindow):
         self.hide()
         self.showMinimized()
 
+
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
@@ -920,7 +920,8 @@ def main():
 
     login_dialog = LoginDialog()
     if login_dialog.exec() == QDialog.DialogCode.Accepted:
-        main_window = MainWindow(login_dialog.server_ip, login_dialog.username, login_dialog.password)
+        sock, username, password = login_dialog.get_socket_and_credentials()
+        main_window = MainWindow(sock, username, password)
         main_window.show()
         sys.exit(app.exec())
     else:

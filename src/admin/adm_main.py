@@ -238,11 +238,15 @@ class ServerThread(QThread):
     auth_failed = pyqtSignal(str)
     stop_screen_requested = pyqtSignal(str)
     file_received = pyqtSignal(str, str, str, str, int, str)
+    pending_user_connected = pyqtSignal(str)
+    pending_user_removed = pyqtSignal(str)
 
     def __init__(self, server_password, port=5555):
         super().__init__()
         self.port = port
         self.clients = {}
+        self.pending_clients = {}
+        self.approved_users = set()
         self.running = True
         self.server_password_hash = hash_password(server_password)
         self.transport = TransportCipher(server_password)
@@ -296,16 +300,20 @@ class ServerThread(QThread):
                     password_hash = hash_password(password)
 
                     if password_hash == self.server_password_hash:
-                        send_packet(client_socket, {'status': 'success'})
-                        self.clients[username] = {'socket': client_socket, 'addr': addr}
-                        self.user_connected.emit(username)
-                        client_thread = threading.Thread(target=self.handle_client, args=(client_socket, username))
-                        client_thread.daemon = True
-                        client_thread.start()
-                    else:
-                        send_packet(client_socket, {'status': 'failed', 'error': 'Неверный пароль'})
-                        client_socket.close()
-                        self.auth_failed.emit(username)
+                        if username in self.approved_users:
+                            send_packet(client_socket, {'status': 'success'})
+                            self.clients[username] = {'socket': client_socket, 'addr': addr}
+
+                            client_thread = threading.Thread(
+                                target=self.handle_client,
+                                args=(client_socket, username),
+                                daemon=True
+                            )
+                            client_thread.start()
+                        else:
+                            send_packet(client_socket, {'status': 'pending'})
+                            self.pending_clients[username] = {'socket': client_socket, 'addr': addr}
+                            self.pending_user_connected.emit(username)
                 except Exception as e:
                     try:
                         send_packet(client_socket, {'status': 'failed', 'error': str(e)})
@@ -369,7 +377,6 @@ class ServerThread(QThread):
                         elif packet_type == 'screen':
                             to_user = packet.get('to')
                             screen_data = self.transport.decrypt_text(packet.get('data'))
-                            print(f"Получен скриншот от {username}, размер данных: {len(screen_data)}")
                             self.screen_received.emit(username, screen_data)
 
                         elif packet_type == 'stop_screen':
@@ -400,7 +407,6 @@ class ServerThread(QThread):
                                 'total_chunks': total_chunks,
                                 'received_chunks': 0
                             }
-                            print(f"[FILE] Начало приёма {filename} от {username}")
 
                         elif packet_type == 'file_chunk':
                             file_id = packet.get('file_id')
@@ -429,7 +435,6 @@ class ServerThread(QThread):
                                 filesize = info['filesize']
                                 db.save_file(chat_type, from_user, to_user, filename, filepath, filesize)
                                 timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                print(f"[FILE] Файл {filename} сохранён в {filepath}")
                                 del self.file_receives[file_id]
 
                                 notify_data = {
@@ -462,7 +467,6 @@ class ServerThread(QThread):
                             from_user = packet.get('from_user')
                             chat_type = packet.get('chat_type')
                             to_user = packet.get('to_user')
-                            print(f"[FILE] Запрос на скачивание {filename} от {username} (отправитель {from_user})")
                             file_info = db.get_file_by_name_and_sender(filename, from_user, to_user, chat_type)
                             if file_info:
                                 file_id_db, filepath, filesize = file_info
@@ -497,6 +501,36 @@ class ServerThread(QThread):
             self.user_disconnected.emit(username)
             if username in self.clients:
                 del self.clients[username]
+
+    def approve_user(self, username):
+        if username in self.pending_clients:
+            client_info = self.pending_clients[username]
+            client_socket = client_info['socket']
+            self.approved_users.add(username)
+            addr = client_info['addr']
+            try:
+                send_packet(client_socket, {'type': 'approved'})
+            except:
+                pass
+            self.clients[username] = {'socket': client_socket, 'addr': addr}
+            self.user_connected.emit(username)
+            if username in self.pending_clients:
+                del self.pending_clients[username]
+            self.pending_user_removed.emit(username)
+            client_thread = threading.Thread(target=self.handle_client, args=(client_socket, username))
+            client_thread.daemon = True
+            client_thread.start()
+
+    def reject_user(self, username):
+        if username in self.pending_clients:
+            try:
+                send_packet(self.pending_clients[username]['socket'], {'type': 'rejected'})
+                self.pending_clients[username]['socket'].close()
+            except:
+                pass
+            if username in self.pending_clients:
+                del self.pending_clients[username]
+            self.pending_user_removed.emit(username)
 
     def send_notification(self, to_user, message):
         if to_user in self.clients:
@@ -557,6 +591,11 @@ class ServerThread(QThread):
     def stop(self):
         self.running = False
         for client in self.clients.values():
+            try:
+                client['socket'].close()
+            except:
+                pass
+        for client in self.pending_clients.values():
             try:
                 client['socket'].close()
             except:
@@ -844,6 +883,14 @@ class MainWindow(QMainWindow):
         self.user_list.itemClicked.connect(self.on_user_clicked)
         left_layout.addWidget(self.user_list)
 
+        pending_label = QLabel("Ожидающие")
+        pending_label.setStyleSheet("color: white; font-size: 16px; font-weight: bold; padding: 10px;")
+        left_layout.addWidget(pending_label)
+
+        self.pending_list = QListWidget()
+        self.pending_list.itemClicked.connect(self.on_pending_clicked)
+        left_layout.addWidget(self.pending_list)
+
         main_layout.addWidget(left_panel)
 
         right_panel = QWidget()
@@ -1119,10 +1166,31 @@ class MainWindow(QMainWindow):
         self.server_thread.screen_received.connect(self.on_screen_received)
         self.server_thread.stop_screen_requested.connect(self.on_stop_screen_requested)
         self.server_thread.file_received.connect(self.on_file_received)
+        self.server_thread.pending_user_connected.connect(self.on_pending_user_connected)
+        self.server_thread.pending_user_removed.connect(self.on_pending_user_removed)
         self.server_thread.start()
 
+    def on_pending_user_connected(self, username):
+        self.pending_list.addItem(username)
+
+    def on_pending_user_removed(self, username):
+        items = self.pending_list.findItems(username, Qt.MatchFlag.MatchExactly)
+        for item in items:
+            self.pending_list.takeItem(self.pending_list.row(item))
+
+    def on_pending_clicked(self, item):
+        username = item.text()
+        menu = QMenu()
+        menu.setStyleSheet("background-color: #3d3d4a; color: white; font-size: 13px;")
+        approve_action = menu.addAction("Добавить")
+        reject_action = menu.addAction("Отклонить")
+        action = menu.exec(QCursor.pos())
+        if action == approve_action:
+            self.server_thread.approve_user(username)
+        elif action == reject_action:
+            self.server_thread.reject_user(username)
+
     def on_screen_received(self, username, screen_data):
-        print(f"Получен скриншот от {username}, длина данных: {len(screen_data)}")
         if self.current_screen_user == username:
             try:
                 from io import BytesIO
@@ -1146,7 +1214,6 @@ class MainWindow(QMainWindow):
                 self.screen_label.setText(f"Ошибка: {str(e)}")
 
     def on_stop_screen_requested(self, username):
-        print(f"Трансляция остановлена пользователем {username}")
         if self.current_screen_user == username:
             self.current_screen_user = None
             self.screen_label.setText("Выберите сотрудника для просмотра экрана")
@@ -1172,6 +1239,8 @@ class MainWindow(QMainWindow):
 
     def on_user_connected(self, username):
         self.user_list.addItem(username)
+
+        self.on_pending_user_removed(username)
 
         if username not in self.private_chats:
             chat_widget = self.create_chat_widget()
