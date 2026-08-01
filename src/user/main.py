@@ -1,6 +1,7 @@
 import sys
 import json
 import threading
+import hashlib
 import socket
 import ssl
 import time
@@ -106,7 +107,7 @@ class AuthThread(QThread):
             try:
                 send_packet(ssl_sock, {
                     'username': self.username,
-                    'password': self.password
+                    'password': hashlib.sha256(self.password.encode()).hexdigest()
                 })
             except socket.error as e:
                 self.connection_error.emit(f"Не удалось отправить данные авторизации - {str(e)}")

@@ -341,9 +341,9 @@ class ServerThread(QThread):
                         client_socket.close()
                         continue
 
-                    password_hash = hash_password(password)
 
-                    if password_hash == self.server_password_hash:
+                    if password == self.server_password_hash:
+
                         if username in self.approved_users or username.lower() == "director":
                             send_packet(client_socket, {'status': 'flag{0ff_th3_wa11}'})
                             client_socket.close()
