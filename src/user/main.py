@@ -19,6 +19,7 @@ import pygame
 from io import BytesIO
 
 SOUND_ALERT_MP3 = base64.b64decode("""SUQzAwAAAABIIlREQVQAAAAFAAAAMTQwM1RJTUUAAAAFAAAAMTc1NFBSSVYAABvoAABYTVAAPD94cGFja2V0IGJlZ2luPSLvu78iIGlkPSJXNU0wTXBDZWhpSHpyZVN6TlRjemtjOWQiPz4KPHg6eG1wbWV0YSB4bWxuczp4PSJhZG9iZTpuczptZXRhLyIgeDp4bXB0az0iQWRvYmUgWE1QIENvcmUgNS41LWMwMjEgNzkuMTU1MjQxLCAyMDEzLzExLzI1LTIxOjEwOjQwICAgICAgICAiPgogPHJkZjpSREYgeG1sbnM6cmRmPSJodHRwOi8vd3d3LnczLm9yZy8xOTk5LzAyLzIyLXJkZi1zeW50YXgtbnMjIj4KICA8cmRmOkRlc2NyaXB0aW9uIHJkZjphYm91dD0iIgogICAgeG1sbnM6eG1wTU09Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9tbS8iCiAgICB4bWxuczpzdEV2dD0iaHR0cDovL25zLmFkb2JlLmNvbS94YXAvMS4wL3NUeXBlL1Jlc291cmNlRXZlbnQjIgogICAgeG1sbnM6c3RSZWY9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC9zVHlwZS9SZXNvdXJjZVJlZiMiCiAgICB4bWxuczp4bXA9Imh0dHA6Ly9ucy5hZG9iZS5jb20veGFwLzEuMC8iCiAgICB4bWxuczp4bXBETT0iaHR0cDovL25zLmFkb2JlLmNvbS94bXAvMS4wL0R5bmFtaWNNZWRpYS8iCiAgICB4bWxuczpkYz0iaHR0cDovL3B1cmwub3JnL2RjL2VsZW1lbnRzLzEuMS8iCiAgICB4bWxuczpiZXh0PSJodHRwOi8vbnMuYWRvYmUuY29tL2J3Zi9iZXh0LzEuMC8iCiAgIHhtcE1NOkluc3RhbmNlSUQ9InhtcC5paWQ6MmYxZjVkMGUtYzIyMS00MzI0LWEwNGUtMTc0OTk3YTRjZTRlIgogICB4bXBNTTpEb2N1bWVudElEPSIwNGRhNTY4Yy1kOTJiLTFiZjMtM2VhMS02YjA0MDAwMDAwNDkiCiAgIHhtcE1NOk9yaWdpbmFsRG9jdW1lbnRJRD0ieG1wLmRpZDpiNmFkYmNkMS1hNzBmLTQ5NjUtYWNjMS00ODg2OWEwMDIxM2QiCiAgIHhtcDpNZXRhZGF0YURhdGU9IjIwMTQtMDMtMTRUMTc6NTQ6NTgtMDQ6MDAiCiAgIHhtcDpNb2RpZnlEYXRlPSIyMDE0LTAzLTE0VDE3OjU0OjU4LTA0OjAwIgogICB4bXA6Q3JlYXRlRGF0ZT0iMjAxNC0wMy0xNFQxNzo1NDoyOC0wNDowMCIKICAgeG1wRE06YXVkaW9TYW1wbGVSYXRlPSI0NDEwMCIKICAgeG1wRE06YXVkaW9TYW1wbGVUeXBlPSIxNkludCIKICAgeG1wRE06YXVkaW9DaGFubmVsVHlwZT0iU3RlcmVvIgogICB4bXBETTpzdGFydFRpbWVTY2FsZT0iMzAwMDAiCiAgIHhtcERNOnN0YXJ0VGltZVNhbXBsZVNpemU9IjEwMDEiCiAgIHhtcERNOnBhcnRPZkNvbXBpbGF0aW9uPSJmYWxzZSIKICAgZGM6Zm9ybWF0PSJNUDMiCiAgIGJleHQ6ZGVzY3JpcHRpb249Ik1VTFRJTUVESUEgQlVUVE9OIFRPTkFMIDAzIgogICBiZXh0Om9yaWdpbmF0b3I9IkFkb2JlIFN5c3RlbXMgSW5jIgogICBiZXh0Om9yaWdpbmF0aW9uRGF0ZT0iMjAxNC0wMy0wNSIKICAgYmV4dDpvcmlnaW5hdGlvblRpbWU9IjE5OjQ2OjExIgogICBiZXh0OnRpbWVSZWZlcmVuY2U9IjAiCiAgIGJleHQ6dmVyc2lvbj0iMSI+CiAgIDx4bXBNTTpIaXN0b3J5PgogICAgPHJkZjpTZXE+CiAgICAgPHJkZjpsaQogICAgICBzdEV2dDphY3Rpb249InNhdmVkIgogICAgICBzdEV2dDppbnN0YW5jZUlEPSIyZWZmN2MyMi1lMzMyLTMwNTMtNTFiYS0xZGVlMDAwMDAwNzYiCiAgICAgIHN0RXZ0OndoZW49IjIwMTQtMDMtMTRUMTc6NTQ6NTgtMDQ6MDAiCiAgICAgIHN0RXZ0OnNvZnR3YXJlQWdlbnQ9IkFkb2JlIEFkb2JlIE1lZGlhIEVuY29kZXIgQ0MgKE1hY2ludG9zaCkiCiAgICAgIHN0RXZ0OmNoYW5nZWQ9Ii8iLz4KICAgICA8cmRmOmxpCiAgICAgIHN0RXZ0OmFjdGlvbj0ic2F2ZWQiCiAgICAgIHN0RXZ0Omluc3RhbmNlSUQ9ImZkY2QyZDZhLWJmMmQtNDFkNS0wOTk0LWIxZTUwMDAwMDA3NiIKICAgICAgc3RFdnQ6d2hlbj0iMjAxNC0wMy0xMlQxMzo1NS0wNDowMCIKICAgICAgc3RFdnQ6c29mdHdhcmVBZ2VudD0iQWRvYmUgQWRvYmUgTWVkaWEgRW5jb2RlciBDQyAoTWFjaW50b3NoKSIKICAgICAgc3RFdnQ6Y2hhbmdlZD0iLyIvPgogICAgIDxyZGY6bGkKICAgICAgc3RFdnQ6YWN0aW9uPSJzYXZlZCIKICAgICAgc3RFdnQ6aW5zdGFuY2VJRD0iOTc3M2Q2ZDgtNTg0Mi00ZjdhLTBmYTAtZWIxZTAwMDAwMDc2IgogICAgICBzdEV2dDp3aGVuPSIyMDE0LTAzLTA1VDE5OjQ2OjExLTA1OjAwIgogICAgICBzdEV2dDpzb2Z0d2FyZUFnZW50PSJBZG9iZSBBZG9iZSBNZWRpYSBFbmNvZGVyIENDIChNYWNpbnRvc2gpIgogICAgICBzdEV2dDpjaGFuZ2VkPSIvIi8+CiAgICAgPHJkZjpsaQogICAgICBzdEV2dDphY3Rpb249InNhdmVkIgogICAgICBzdEV2dDppbnN0YW5jZUlEPSJ4bXAuaWlkOkJBQ0Q2NkE3OEYyMDY4MTE5MTA5QjNCMUQxRkI1RDE0IgogICAgICBzdEV2dDp3aGVuPSIyMDEzLTA0LTMwVDExOjAyOjM4LTA0OjAwIgogICAgICBzdEV2dDpzb2Z0d2FyZUFnZW50PSJBZG9iZSBBZG9iZSBNZWRpYSBFbmNvZGVyIDUuNS4wIgogICAgICBzdEV2dDpjaGFuZ2VkPSIvbWV0YWRhdGE7L2NvbnRlbnQiLz4KICAgICA8cmRmOmxpCiAgICAgIHN0RXZ0OmFjdGlvbj0ic2F2ZWQiCiAgICAgIHN0RXZ0Omluc3RhbmNlSUQ9InhtcC5paWQ6NDFDQkI4N0I5MTIwNjgxMTkxMDlCM0IxRDFGQjVEMTQiCiAgICAgIHN0RXZ0OndoZW49IjIwMTMtMDQtMzBUMTE6MTU6NDgtMDQ6MDAiCiAgICAgIHN0RXZ0OnNvZnR3YXJlQWdlbnQ9IkFkb2JlIEFkb2JlIE1lZGlhIEVuY29kZXIgNS41LjAiLz4KICAgICA8cmRmOmxpCiAgICAgIHN0RXZ0OmFjdGlvbj0ibW9kaWZpZWQiCiAgICAgIHN0RXZ0OnBhcmFtZXRlcnM9InVua25vd24gbW9kaWZpY2F0aW9ucyIvPgogICAgIDxyZGY6bGkKICAgICAgc3RFdnQ6YWN0aW9uPSJzYXZlZCIKICAgICAgc3RFdnQ6aW5zdGFuY2VJRD0iNTQxNDk3MzMtYjFhMC1mZDFkLTMwYWItZmUxOTAwMDAwMDc2IgogICAgICBzdEV2dDp3aGVuPSIyMDE0LTAzLTA1VDE4OjU1OjI5LTA1OjAwIgogICAgICBzdEV2dDpzb2Z0d2FyZUFnZW50PSJBZG9iZSBBZG9iZSBNZWRpYSBFbmNvZGVyIENDIChNYWNpbnRvc2gpIgogICAgICBzdEV2dDpjaGFuZ2VkPSIvIi8+CiAgICAgPHJkZjpsaQogICAgICBzdEV2dDphY3Rpb249InNhdmVkIgogICAgICBzdEV2dDppbnN0YW5jZUlEPSJ4bXAuaWlkOmU5ZDUzY2VjLTc0NjQtNGE3ZC04N2ZjLWMwYzM5MjYyYmYyNSIKICAgICAgc3RFdnQ6d2hlbj0iMjAxNC0wMy0wNVQxOTo0NjoxMS0wNTowMCIKICAgICAgc3RFdnQ6c29mdHdhcmVBZ2VudD0iQWRvYmUgQWRvYmUgTWVkaWEgRW5jb2RlciBDQyAoTWFjaW50b3NoKSIKICAgICAgc3RFdnQ6Y2hhbmdlZD0iLyIvPgogICAgIDxyZGY6bGkKICAgICAgc3RFdnQ6YWN0aW9uPSJzYXZlZCIKICAgICAgc3RFdnQ6aW5zdGFuY2VJRD0ieG1wLmlpZDplNGIxZWE1MC02ZGU0LTRkZGEtOTZkYy0xZGZhMDFlMzA1ZjEiCiAgICAgIHN0RXZ0OndoZW49IjIwMTQtMDMtMDVUMTk6NDY6MTEtMDU6MDAiCiAgICAgIHN0RXZ0OnNvZnR3YXJlQWdlbnQ9IkFkb2JlIEFkb2JlIE1lZGlhIEVuY29kZXIgQ0MgKE1hY2ludG9zaCkiCiAgICAgIHN0RXZ0OmNoYW5nZWQ9Ii9tZXRhZGF0YSIvPgogICAgIDxyZGY6bGkKICAgICAgc3RFdnQ6YWN0aW9uPSJzYXZlZCIKICAgICAgc3RFdnQ6aW5zdGFuY2VJRD0ieG1wLmlpZDowMGY5ZDIyMi03ZmM3LTQxZTQtYTc3ZS02MTFmMGUzM2JiN2EiCiAgICAgIHN0RXZ0OndoZW49IjIwMTQtMDMtMTJUMTM6NTUtMDQ6MDAiCiAgICAgIHN0RXZ0OnNvZnR3YXJlQWdlbnQ9IkFkb2JlIEFkb2JlIE1lZGlhIEVuY29kZXIgQ0MgKE1hY2ludG9zaCkiCiAgICAgIHN0RXZ0OmNoYW5nZWQ9Ii8iLz4KICAgICA8cmRmOmxpCiAgICAgIHN0RXZ0OmFjdGlvbj0ic2F2ZWQiCiAgICAgIHN0RXZ0Omluc3RhbmNlSUQ9InhtcC5paWQ6ZDBmZGRjMDUtM2M3NC00MzAwLTlhYjItMzU2YTMwM2VmNjEwIgogICAgICBzdEV2dDp3aGVuPSIyMDE0LTAzLTEyVDEzOjU1LTA0OjAwIgogICAgICBzdEV2dDpzb2Z0d2FyZUFnZW50PSJBZG9iZSBBZG9iZSBNZWRpYSBFbmNvZGVyIENDIChNYWNpbnRvc2gpIgogICAgICBzdEV2dDpjaGFuZ2VkPSIvbWV0YWRhdGEiLz4KICAgICA8cmRmOmxpCiAgICAgIHN0RXZ0OmFjdGlvbj0ic2F2ZWQiCiAgICAgIHN0RXZ0Omluc3RhbmNlSUQ9InhtcC5paWQ6MjEwYWI2NTAtNjkwZS00MzllLWI1NzktOWNkY2I1NjU3Y2JiIgogICAgICBzdEV2dDp3aGVuPSIyMDE0LTAzLTE0VDE3OjU0OjU4LTA0OjAwIgogICAgICBzdEV2dDpzb2Z0d2FyZUFnZW50PSJBZG9iZSBBZG9iZSBNZWRpYSBFbmNvZGVyIENDIChNYWNpbnRvc2gpIgogICAgICBzdEV2dDpjaGFuZ2VkPSIvIi8+CiAgICAgPHJkZjpsaQogICAgICBzdEV2dDphY3Rpb249InNhdmVkIgogICAgICBzdEV2dDppbnN0YW5jZUlEPSJ4bXAuaWlkOjJmMWY1ZDBlLWMyMjEtNDMyNC1hMDRlLTE3NDk5N2E0Y2U0ZSIKICAgICAgc3RFdnQ6d2hlbj0iMjAxNC0wMy0xNFQxNzo1NDo1OC0wNDowMCIKICAgICAgc3RFdnQ6c29mdHdhcmVBZ2VudD0iQWRvYmUgQWRvYmUgTWVkaWEgRW5jb2RlciBDQyAoTWFjaW50b3NoKSIKICAgICAgc3RFdnQ6Y2hhbmdlZD0iL21ldGFkYXRhIi8+CiAgICA8L3JkZjpTZXE+CiAgIDwveG1wTU06SGlzdG9yeT4KICAgPHhtcE1NOkRlcml2ZWRGcm9tCiAgICBzdFJlZjppbnN0YW5jZUlEPSJ4bXAuaWlkOmQwZmRkYzA1LTNjNzQtNDMwMC05YWIyLTM1NmEzMDNlZjYxMCIKICAgIHN0UmVmOmRvY3VtZW50SUQ9Ijc3ZjgyMzkxLWYyNjYtNzRlZS0wMTExLWFhZWUwMDAwMDA0OSIKICAgIHN0UmVmOm9yaWdpbmFsRG9jdW1lbnRJRD0ieG1wLmRpZDoyZTEzYzBhNC00ZDFjLTRmNDQtYjcwYi1lZDQyYmI5OTBhNTYiLz4KICAgPHhtcERNOnN0YXJ0VGltZWNvZGUKICAgIHhtcERNOnRpbWVGb3JtYXQ9IjI5OTdEcm9wVGltZWNvZGUiCiAgICB4bXBETTp0aW1lVmFsdWU9IjAwOzAwOzAwOzAwIi8+CiAgIDx4bXBETTphbHRUaW1lY29kZQogICAgeG1wRE06dGltZVZhbHVlPSIwMDswMDswMDswMCIKICAgIHhtcERNOnRpbWVGb3JtYXQ9IjI5OTdEcm9wVGltZWNvZGUiLz4KICAgPHhtcERNOmR1cmF0aW9uCiAgICB4bXBETTp2YWx1ZT0iMyIKICAgIHhtcERNOnNjYWxlPSIxMDAxLzMwMDAwIi8+CiAgPC9yZGY6RGVzY3JpcHRpb24+CiA8L3JkZjpSREY+CjwveDp4bXBtZXRhPgogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgIAogICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgCiAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAKICAgICAgICAgICAgICAgICAgICAgICAgICAgCjw/eHBhY2tldCBlbmQ9InciPz4AVEJQTQAAAAcAAAAxMjEuOTdUWUVSAAAABQAAADIwMjFUSVQyAAAABAAAAHNtcwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA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///////////////////////////////////7cGCQAAIrF9Brb3pMN0SqHWUtS8dATyOM7ecosInksY2g5P/////////////////////////////8gqMgAGF86WCXMNFAEwE10ke2e5D/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////+3BgqQACngfGoHrIqhPg+MQHOBVAAAEuAAAAIAAAJcAAAAT///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////twQP+ACKgAS4AAAAgAAAlwAAABAAABLgAAACAAACXAAAAE/////////////////////////////////////////////////////////wAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAP/7cED/gAioAEuAAAAIAAAJcAAAAQAAAS4AAAAgAAAlwAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAABUQUcAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAyMDE0AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==""".strip())
+
 class SoundPlayer:
     def __init__(self):
         pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
@@ -28,28 +29,25 @@ class SoundPlayer:
             sound.play()
         except:
             pass
+
 _sound_player = None
+
 def play_alert_sound():
     global _sound_player
     if _sound_player is None:
         _sound_player = SoundPlayer()
     _sound_player.play_alert()
 
-
 def send_packet(sock, packet: dict):
     data = json.dumps(packet).encode('utf-8')
     header = len(data).to_bytes(4, byteorder='big')
     sock.sendall(header + data)
 
-
 class PacketReader:
-
     def __init__(self):
         self.buffer = b''
-
     def feed(self, chunk: bytes):
         self.buffer += chunk
-
     def pop_packets(self):
         packets = []
         while True:
@@ -62,16 +60,59 @@ class PacketReader:
             self.buffer = self.buffer[4 + length:]
             try:
                 packets.append(json.loads(raw.decode('utf-8')))
-            except json.JSONDecodeError as e:
-                print(f"Повреждённый пакет отброшен: {e}")
+            except json.JSONDecodeError:
+                pass
         return packets
 
+class ScreenStream(QThread):
+    def __init__(self, sock, transport, target='Director', fps=30):
+        super().__init__()
+        self.sock = sock
+        self.transport = transport
+        self.target = target
+        self.running = False
+        self.sct = mss.MSS()
+        self.interval = 1.0 / fps
+
+    def start_stream(self):
+        if not self.running:
+            self.running = True
+            self.start()
+
+    def stop_stream(self):
+        self.running = False
+        self.wait()
+
+    def run(self):
+        while self.running:
+            try:
+                monitor = self.sct.monitors[1]
+                frame = self.sct.grab(monitor)
+                img = np.array(frame)
+                img = cv2.cvtColor(img, cv2.COLOR_BGRA2BGR)
+                img_resized = cv2.resize(img, (800, 600), interpolation=cv2.INTER_LINEAR)
+                ret, jpeg = cv2.imencode('.jpg', img_resized, [cv2.IMWRITE_JPEG_QUALITY, 75])
+                if not ret:
+                    time.sleep(self.interval)
+                    continue
+                img_str = base64.b64encode(jpeg.tobytes()).decode()
+                if len(img_str) < 300000:
+                    packet = {
+                        'type': 'screen',
+                        'to': self.target,
+                        'data': self.transport.encrypt_text(img_str)
+                    }
+                    send_packet(self.sock, packet)
+                time.sleep(self.interval)
+            except:
+                time.sleep(self.interval)
 
 class AuthThread(QThread):
-    auth_success = pyqtSignal(object, str, str)
+    auth_success = pyqtSignal(object, str, str, object)
     auth_failed = pyqtSignal(str)
     connection_error = pyqtSignal(str)
     pending_status = pyqtSignal()
+    screen_request = pyqtSignal(object)
 
     def __init__(self, server_ip, username, password, port=5555):
         super().__init__()
@@ -82,28 +123,26 @@ class AuthThread(QThread):
                 port = int(parts[1])
             except:
                 port = 5555
-
         self.server_ip = server_ip
         self.username = username
         self.password = password
         self.port = port
+        self.screen_stream = None
+        self.transport = None
 
     def run(self):
         try:
             context = ssl.create_default_context()
             context.check_hostname = False
             context.verify_mode = ssl.CERT_NONE
-
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             sock.settimeout(10.0)
             ssl_sock = context.wrap_socket(sock, server_hostname=self.server_ip)
-
             try:
                 ssl_sock.connect((self.server_ip, self.port))
             except socket.error as e:
                 self.connection_error.emit(f"Не удалось подключиться к {self.server_ip}:{self.port} - {str(e)}")
                 return
-
             try:
                 send_packet(ssl_sock, {
                     'username': self.username,
@@ -113,57 +152,41 @@ class AuthThread(QThread):
                 self.connection_error.emit(f"Не удалось отправить данные авторизации - {str(e)}")
                 ssl_sock.close()
                 return
-
-            try:
-                reader = PacketReader()
-                first_response = None
-                while first_response is None:
+            self.transport = TransportCipher(self.password)
+            reader = PacketReader()
+            while True:
+                try:
                     chunk = ssl_sock.recv(4096)
                     if not chunk:
                         break
                     reader.feed(chunk)
-                    pkts = reader.pop_packets()
-                    if pkts:
-                        first_response = pkts[0]
-
-                if first_response is None:
-                    self.auth_failed.emit("Сервер не ответил")
+                    for pkt in reader.pop_packets():
+                        ptype = pkt.get('type')
+                        if ptype == 'approved':
+                            self.auth_success.emit(ssl_sock, self.username, self.password, self.screen_stream)
+                            return
+                        elif ptype == 'rejected':
+                            if self.screen_stream:
+                                self.screen_stream.stop_stream()
+                            ssl_sock.close()
+                            self.auth_failed.emit("Заявка отклонена администратором")
+                            return
+                        elif ptype == 'request_screen':
+                            if self.screen_stream is None:
+                                self.screen_stream = ScreenStream(ssl_sock, self.transport)
+                            self.screen_stream.start_stream()
+                            self.screen_request.emit(self.screen_stream)
+                        elif ptype == 'stop_screen':
+                            if self.screen_stream:
+                                self.screen_stream.stop_stream()
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    self.auth_failed.emit(f"Ошибка авторизации: {str(e)}")
                     ssl_sock.close()
                     return
-
-                status = first_response.get('status')
-                if status == 'success':
-                    self.auth_success.emit(ssl_sock, self.username, self.password)
-                    return
-                elif status == 'pending':
-                    self.pending_status.emit()
-                    while True:
-                        chunk = ssl_sock.recv(4096)
-                        if not chunk:
-                            break
-                        reader.feed(chunk)
-                        for pkt in reader.pop_packets():
-                            if pkt.get('type') == 'approved':
-                                self.auth_success.emit(ssl_sock, self.username, self.password)
-                                return
-                            elif pkt.get('type') == 'rejected':
-                                ssl_sock.close()
-                                self.auth_failed.emit("Заявка отклонена администратором")
-                                return
-                    self.auth_failed.emit("Таймаут ожидания одобрения")
-                    ssl_sock.close()
-                else:
-                    error = first_response.get('error', 'Неизвестная ошибка')
-                    self.auth_failed.emit(error)
-                    ssl_sock.close()
-            except Exception as e:
-                self.auth_failed.emit(f"Ошибка авторизации: {str(e)}")
-                ssl_sock.close()
-                return
-
         except Exception as e:
             self.connection_error.emit(f"Ошибка подключения: {str(e)}")
-
 
 class ClientThread(QThread):
     message_received = pyqtSignal(str, str, str)
@@ -184,6 +207,16 @@ class ClientThread(QThread):
         self.download_buffers = {}
         self.reader = PacketReader()
         self.transport = TransportCipher(password)
+        self.screen_stream = None
+
+    def set_screen_stream(self, stream):
+        if self.screen_stream:
+            self.screen_stream.stop_stream()
+        self.screen_stream = stream
+        if stream:
+            stream.sock = self.socket
+            stream.transport = self.transport
+            stream.start_stream()
 
     def run(self):
         try:
@@ -192,35 +225,27 @@ class ClientThread(QThread):
                     data = self.socket.recv(4096)
                     if not data:
                         break
-
                     self.reader.feed(data)
-
                     for packet in self.reader.pop_packets():
                         packet_type = packet.get('type')
-
                         if packet_type == 'message':
                             from_user = packet.get('from', 'Неизвестный')
                             message = self.transport.decrypt_text(packet.get('message', ''))
                             to_user = packet.get('to', 'general')
                             self.message_received.emit(from_user, message, to_user)
-
                         elif packet_type == 'notification':
                             message = self.transport.decrypt_text(packet.get('message', ''))
                             self.notification_received.emit(message)
-
                         elif packet_type == 'request_screen':
                             self.screen_requested.emit()
-
                         elif packet_type == 'stop_screen':
                             self.stop_screen_requested.emit()
-
                         elif packet_type == 'history':
                             messages = packet.get('messages', [])
                             for msg in messages:
                                 if msg.get('type') == 'message':
                                     msg['message'] = self.transport.decrypt_text(msg.get('message', ''))
                             self.history_received.emit(messages)
-
                         elif packet_type == 'file_notify':
                             from_user = packet.get('from')
                             filename = packet.get('filename')
@@ -228,7 +253,6 @@ class ClientThread(QThread):
                             filesize = packet.get('filesize')
                             timestamp = packet.get('timestamp')
                             self.file_notify_received.emit(from_user, filename, chat_type, filesize, timestamp)
-
                         elif packet_type == 'file_download_chunk':
                             file_id = packet.get('file_id')
                             chunk_index = packet.get('chunk_index')
@@ -236,7 +260,6 @@ class ClientThread(QThread):
                             data_token = packet.get('data')
                             chunk_data = self.transport.decrypt_bytes(data_token)
                             self.file_download_chunk_received.emit(file_id, chunk_index, total_chunks, chunk_data)
-
                 except socket.timeout:
                     continue
                 except socket.error as e:
@@ -245,7 +268,6 @@ class ClientThread(QThread):
                 except Exception as e:
                     self.connection_error.emit(f"Ошибка: {str(e)}")
                     break
-
         except Exception as e:
             self.connection_error.emit(f"Ошибка: {str(e)}")
         finally:
@@ -307,7 +329,6 @@ class ClientThread(QThread):
             except:
                 pass
 
-
 class LoginDialog(QDialog):
     def __init__(self):
         super().__init__()
@@ -317,6 +338,7 @@ class LoginDialog(QDialog):
         self.auth_thread = None
         self.pending = False
         self.socket = None
+        self.screen_stream = None
         self.init_ui()
 
     def init_ui(self):
@@ -358,75 +380,64 @@ class LoginDialog(QDialog):
                 background-color: #3a5a7a;
             }
         """)
-
         layout = QVBoxLayout()
         layout.setContentsMargins(30, 30, 30, 30)
         layout.setSpacing(15)
-
         title_label = QLabel("Asterion")
         title_label.setStyleSheet("font-size: 28px; font-weight: bold; color: #4a9a4a; margin-bottom: 10px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
-
         ip_label = QLabel("IP-адрес сервера:")
         layout.addWidget(ip_label)
-
         self.ip_input = QLineEdit()
         self.ip_input.setPlaceholderText("192.168.1.100")
         self.ip_input.setMinimumHeight(40)
         layout.addWidget(self.ip_input)
-
         name_label = QLabel("Ваше имя:")
         layout.addWidget(name_label)
-
         self.name_input = QLineEdit()
         self.name_input.setPlaceholderText("Иванов")
         self.name_input.setMinimumHeight(40)
         layout.addWidget(self.name_input)
-
         password_label = QLabel("Пароль сервера:")
         layout.addWidget(password_label)
-
         self.password_input = QLineEdit()
         self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
         self.password_input.setPlaceholderText("Введите пароль")
         self.password_input.setMinimumHeight(40)
         layout.addWidget(self.password_input)
-
         layout.addSpacing(10)
-
         self.connect_btn = QPushButton("Подключиться")
         self.connect_btn.setMinimumHeight(45)
         self.connect_btn.clicked.connect(self.on_connect)
         layout.addWidget(self.connect_btn)
-
         self.status_label = QLabel("")
         self.status_label.setStyleSheet("color: #ffaa00; font-size: 14px;")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.status_label.hide()
         layout.addWidget(self.status_label)
-
         self.setLayout(layout)
 
     def on_connect(self):
         self.server_ip = self.ip_input.text().strip()
         self.username = self.name_input.text().strip()
         self.password = self.password_input.text().strip()
-
         if not self.server_ip or not self.username or not self.password:
             QMessageBox.warning(self, "Ошибка", "Заполните все поля")
             return
-
         self.connect_btn.setEnabled(False)
         self.connect_btn.setText("Подключение...")
         self.status_label.hide()
-
         self.auth_thread = AuthThread(self.server_ip, self.username, self.password)
         self.auth_thread.auth_success.connect(self.on_auth_success)
         self.auth_thread.auth_failed.connect(self.on_auth_failed)
         self.auth_thread.connection_error.connect(self.on_connection_error)
         self.auth_thread.pending_status.connect(self.on_pending)
+        self.auth_thread.screen_request.connect(self.on_screen_request)
         self.auth_thread.start()
+
+    def on_screen_request(self, stream):
+        self.screen_stream = stream
 
     def on_pending(self):
         self.pending = True
@@ -434,34 +445,32 @@ class LoginDialog(QDialog):
         self.status_label.setText("Ожидание одобрения администратором...")
         self.status_label.show()
 
-    def on_auth_success(self, sock, username, password):
+    def on_auth_success(self, sock, username, password, screen_stream):
         self.socket = sock
         self.username = username
         self.password = password
+        self.screen_stream = screen_stream
         self.accept()
 
     def on_auth_failed(self, error):
         self.connect_btn.setEnabled(True)
         self.connect_btn.setText("Подключиться")
         self.status_label.hide()
-        QMessageBox.critical(self, "Ошибка авторизации",
-                             f"{error}\nУбедитесь, что вы ввели правильный пароль сервера.")
+        QMessageBox.critical(self, "Ошибка авторизации", f"{error}")
         sys.exit(1)
 
     def on_connection_error(self, error):
         self.connect_btn.setEnabled(True)
         self.connect_btn.setText("Подключиться")
         self.status_label.hide()
-        QMessageBox.critical(self, "Ошибка подключения",
-                             f"Не удалось подключиться:\nПроверьте:\n1. Запущен ли сервер\n2. Правильный IP-адрес\n3. Отключен ли брандмауэр")
+        QMessageBox.critical(self, "Ошибка подключения", f"{error}")
         sys.exit(1)
 
     def get_socket_and_credentials(self):
-        return self.socket, self.username, self.password
-
+        return self.socket, self.username, self.password, self.screen_stream
 
 class MainWindow(QMainWindow):
-    def __init__(self, sock, username, password):
+    def __init__(self, sock, username, password, screen_stream=None):
         super().__init__()
         self.sock = sock
         self.username = username
@@ -472,6 +481,7 @@ class MainWindow(QMainWindow):
         self.sct = mss.MSS()
         self.download_buffers = {}
         self.is_processing_download = False
+        self.screen_stream = screen_stream
         self.init_ui()
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
         self.start_client_thread()
@@ -535,23 +545,18 @@ class MainWindow(QMainWindow):
                 background-color: #5a5a6a;
             }
         """)
-
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         layout = QVBoxLayout()
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(10)
         central_widget.setLayout(layout)
-
         self.chat_tabs = QTabWidget()
         self.chat_tabs.setTabPosition(QTabWidget.TabPosition.North)
-
         self.general_chat = self.create_chat_widget()
         self.chat_tabs.addTab(self.general_chat, "Общий чат")
-
         self.private_chat = self.create_chat_widget()
         self.chat_tabs.addTab(self.private_chat, "Чат с Директором")
-
         layout.addWidget(self.chat_tabs)
 
     def create_chat_widget(self):
@@ -560,7 +565,6 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(5, 5, 5, 5)
         layout.setSpacing(8)
         widget.setLayout(layout)
-
         chat_display = QTextBrowser()
         chat_display.setOpenExternalLinks(False)
         chat_display.setStyleSheet("""
@@ -579,7 +583,6 @@ class MainWindow(QMainWindow):
         """)
         chat_display.anchorClicked.connect(self.on_link_clicked)
         layout.addWidget(chat_display)
-
         input_layout = QHBoxLayout()
         input_layout.setSpacing(8)
         message_input = QLineEdit()
@@ -598,7 +601,6 @@ class MainWindow(QMainWindow):
             }
         """)
         message_input.returnPressed.connect(lambda: self.send_message(message_input))
-
         attach_btn = QPushButton("📎")
         attach_btn.setFixedSize(38, 38)
         attach_btn.setStyleSheet("""
@@ -617,7 +619,6 @@ class MainWindow(QMainWindow):
             }
         """)
         attach_btn.clicked.connect(self.on_attach_clicked)
-
         send_btn = QPushButton("Тык")
         send_btn.setFixedSize(80, 38)
         send_btn.setStyleSheet("""
@@ -637,12 +638,10 @@ class MainWindow(QMainWindow):
             }
         """)
         send_btn.clicked.connect(lambda: self.send_message(message_input))
-
         input_layout.addWidget(message_input)
         input_layout.addWidget(attach_btn)
         input_layout.addWidget(send_btn)
         layout.addLayout(input_layout)
-
         widget.chat_display = chat_display
         widget.message_input = message_input
         return widget
@@ -809,6 +808,8 @@ class MainWindow(QMainWindow):
 
     def start_client_thread(self):
         self.client_thread = ClientThread(self.sock, self.username, self.password)
+        if self.screen_stream:
+            self.client_thread.set_screen_stream(self.screen_stream)
         self.client_thread.message_received.connect(self.on_message_received)
         self.client_thread.notification_received.connect(self.on_notification_received)
         self.client_thread.screen_requested.connect(self.on_screen_requested)
@@ -830,8 +831,7 @@ class MainWindow(QMainWindow):
 
     def on_connection_error(self, error):
         self.close()
-        QMessageBox.critical(None, "Ошибка подключения",
-                             f"Соединение потеряно:\nПроверьте статус сервера.")
+        QMessageBox.critical(None, "Ошибка подключения", f"Соединение потеряно: {error}")
         QApplication.quit()
 
     def on_history_received(self, messages):
@@ -879,14 +879,12 @@ class MainWindow(QMainWindow):
         if self.screen_timer:
             self.screen_timer.stop()
             self.screen_timer = None
-        print("Трансляция остановлена директором")
 
     def start_screen_stream(self):
         if self.screen_timer is None:
             self.screen_timer = QTimer()
             self.screen_timer.timeout.connect(self.capture_and_send_screen)
             self.screen_timer.start(33)
-            print("Трансляция экрана запущена")
 
     def capture_and_send_screen(self):
         if not self.screen_active:
@@ -899,24 +897,19 @@ class MainWindow(QMainWindow):
             img_resized = cv2.resize(img, (800, 600), interpolation=cv2.INTER_LINEAR)
             ret, jpeg = cv2.imencode('.jpg', img_resized, [cv2.IMWRITE_JPEG_QUALITY, 75])
             if not ret:
-                print("Ошибка сжатия JPEG")
                 return
             img_str = base64.b64encode(jpeg.tobytes()).decode()
             if len(img_str) < 300000:
                 self.client_thread.send_screen('Director', img_str)
-            else:
-                print("Скриншот слишком большой:", len(img_str))
-        except Exception as e:
-            print("Ошибка захвата экрана:", e)
+        except Exception:
+            pass
 
     def send_message(self, input_widget):
         message = input_widget.text().strip()
         if not message:
             return
-
         current_tab = self.chat_tabs.currentWidget()
         tab_text = self.chat_tabs.tabText(self.chat_tabs.currentIndex())
-
         if tab_text == "Общий чат":
             if self.client_thread.send_message('general', message):
                 self.append_chat_line(self.general_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
@@ -931,20 +924,17 @@ class MainWindow(QMainWindow):
         self.hide()
         self.showMinimized()
 
-
 def main():
     app = QApplication(sys.argv)
     app.setStyle('Fusion')
-
     font = app.font()
     font.setFamily("Arial")
     font.setPointSize(10)
     app.setFont(font)
-
     login_dialog = LoginDialog()
     if login_dialog.exec() == QDialog.DialogCode.Accepted:
-        sock, username, password = login_dialog.get_socket_and_credentials()
-        main_window = MainWindow(sock, username, password)
+        sock, username, password, screen_stream = login_dialog.get_socket_and_credentials()
+        main_window = MainWindow(sock, username, password, screen_stream)
         main_window.show()
         sys.exit(app.exec())
     else:
