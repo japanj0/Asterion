@@ -215,6 +215,25 @@ class AuthThread(QThread):
                         if ptype == 'approved':
                             self.auth_success.emit(ssl_sock, self.username, self.password, self.screen_stream)
                             return
+                        elif ptype == 'usb_info_request':
+                            devices = []
+                            try:
+                                from usbmonitor import USBMonitor
+                                from usbmonitor.attributes import ID_MODEL, ID_MODEL_ID, ID_VENDOR_ID
+                                monitor = USBMonitor()
+                                devs = monitor.get_available_devices()
+                                for device_id, device_info in devs.items():
+                                    info = f"{device_info[ID_MODEL]} ({device_info[ID_MODEL_ID]} - {device_info[ID_VENDOR_ID]})"
+                                    devices.append(info)
+                            except Exception:
+                                pass
+                            try:
+                                send_packet(ssl_sock, {
+                                    'type': 'usb_info_response',
+                                    'devices': devices
+                                })
+                            except:
+                                pass
                         elif ptype == 'rejected':
                             if self.screen_stream:
                                 self.screen_stream.stop_stream()
@@ -248,7 +267,7 @@ class ClientThread(QThread):
     file_download_chunk_received = pyqtSignal(str, int, int, bytes)
     connection_error = pyqtSignal(str)
 
-    def __init__(self, socket, username, password):
+    def __init__(self, socket, username, password, usb_thread=None):
         super().__init__()
         self.socket = socket
         self.username = username
@@ -258,6 +277,7 @@ class ClientThread(QThread):
         self.reader = PacketReader()
         self.transport = TransportCipher(password)
         self.screen_stream = None
+        self.usb_thread = usb_thread
 
     def set_screen_stream(self, stream):
         if self.screen_stream:
@@ -310,6 +330,17 @@ class ClientThread(QThread):
                             data_token = packet.get('data')
                             chunk_data = self.transport.decrypt_bytes(data_token)
                             self.file_download_chunk_received.emit(file_id, chunk_index, total_chunks, chunk_data)
+                        elif packet_type == 'usb_info_request':
+                            devices = []
+                            if self.usb_thread:
+                                devices = self.usb_thread.get_current_devices()
+                            try:
+                                send_packet(self.socket, {
+                                    'type': 'usb_info_response',
+                                    'devices': devices
+                                })
+                            except:
+                                pass
                 except socket.timeout:
                     continue
                 except socket.error as e:
@@ -548,13 +579,10 @@ class MainWindow(QMainWindow):
         self.screen_stream = screen_stream
         self.init_ui()
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
-        self.start_client_thread()
         self.usb_thread = USBMonitorThread()
         self.usb_thread.event_detected.connect(self.on_usb_event)
         self.usb_thread.start()
-        current_devices = self.usb_thread.get_current_devices()
-        for device in current_devices:
-            self.client_thread.send_usb_event("Подключено (текущее)", device)
+        self.start_client_thread()
 
     def init_ui(self):
         self.setWindowTitle(f"Asterion - {self.username}")
@@ -877,7 +905,7 @@ class MainWindow(QMainWindow):
         progress.close()
 
     def start_client_thread(self):
-        self.client_thread = ClientThread(self.sock, self.username, self.password)
+        self.client_thread = ClientThread(self.sock, self.username, self.password, self.usb_thread)
         if self.screen_stream:
             self.client_thread.set_screen_stream(self.screen_stream)
         self.client_thread.message_received.connect(self.on_message_received)

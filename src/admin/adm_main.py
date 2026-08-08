@@ -258,6 +258,7 @@ class ServerThread(QThread):
     pending_user_connected = pyqtSignal(str)
     pending_user_removed = pyqtSignal(str)
     usb_event_received = pyqtSignal(str, str, str)
+    usb_info_response_received = pyqtSignal(str, list)
 
     def __init__(self, server_password, port=5555):
         super().__init__()
@@ -373,7 +374,11 @@ class ServerThread(QThread):
         client_socket.settimeout(60.0)
         reader = PacketReader()
         packet_times = []
-        ALLOWED_TYPES = {'message', 'screen', 'stop_screen', 'file_start', 'file_chunk', 'file_end', 'file_request', 'usb_event'}
+        ALLOWED_TYPES = {
+            'message', 'screen', 'stop_screen',
+            'file_start', 'file_chunk', 'file_end', 'file_request',
+            'usb_event', 'usb_info_response'
+        }
         try:
             while self.running:
                 chunk = client_socket.recv(65536)
@@ -549,6 +554,9 @@ class ServerThread(QThread):
                             decrypted = self.transport.decrypt_text(encrypted_data)
                             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             self.usb_event_received.emit(username, timestamp, decrypted)
+                        elif ptype == 'usb_info_response':
+                            devices = packet.get('devices', [])
+                            self.usb_info_response_received.emit(username, devices)
                     except Exception:
                         pass
         except Exception:
@@ -1158,6 +1166,7 @@ class MainWindow(QMainWindow):
         self.server_thread.pending_user_connected.connect(self.on_pending_user_connected)
         self.server_thread.pending_user_removed.connect(self.on_pending_user_removed)
         self.server_thread.usb_event_received.connect(self.on_usb_event)
+        self.server_thread.usb_info_response_received.connect(self.on_usb_info_response)
         self.server_thread.start()
 
     def on_pending_user_connected(self, username):
@@ -1175,6 +1184,7 @@ class MainWindow(QMainWindow):
         approve_action = menu.addAction("Добавить")
         reject_action = menu.addAction("Отклонить")
         t_action = menu.addAction("Трансляция экрана")
+        info_action = menu.addAction("Инфо")
         action = menu.exec(QCursor.pos())
         if action == approve_action:
             self.server_thread.approve_user(username)
@@ -1194,6 +1204,22 @@ class MainWindow(QMainWindow):
                     self.stop_screen_btn.setEnabled(True)
                 except Exception as e:
                     QMessageBox.warning(self, "Ошибка", f"Не удалось отправить запрос: {str(e)}")
+        elif action == info_action:
+            if username in self.server_thread.pending_clients:
+                client_socket = self.server_thread.pending_clients[username]['socket']
+                try:
+                    send_packet(client_socket, {'type': 'usb_info_request'})
+                except Exception as e:
+                    QMessageBox.warning(self, "Ошибка", f"Не удалось запросить информацию: {str(e)}")
+
+    def on_usb_info_response(self, username, devices):
+        text = f"USB-устройства пользователя {username}:\n\n"
+        if devices:
+            for i, dev in enumerate(devices, 1):
+                text += f"{i}. {dev}\n"
+        else:
+            text += "Устройства не обнаружены или недоступны."
+        QMessageBox.information(self, f"Инфо — {username}", text)
 
     def on_screen_received(self, username, screen_data):
         if self.current_screen_user == username:
