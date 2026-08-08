@@ -555,7 +555,12 @@ class ServerThread(QThread):
                             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             self.usb_event_received.emit(username, timestamp, decrypted)
                         elif ptype == 'usb_info_response':
-                            devices = packet.get('devices', [])
+                            encrypted_data = packet.get('data', '')
+                            try:
+                                decrypted = self.transport.decrypt_text(encrypted_data)
+                                devices = json.loads(decrypted)
+                            except Exception:
+                                devices = []
                             self.usb_info_response_received.emit(username, devices)
                     except Exception:
                         pass

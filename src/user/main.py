@@ -131,8 +131,6 @@ class USBMonitorThread(QThread):
 
     def run(self):
         try:
-            from usbmonitor import USBMonitor
-            from usbmonitor.attributes import ID_MODEL, ID_MODEL_ID, ID_VENDOR_ID
             self.monitor = USBMonitor()
 
             def on_connect(device_id, device_info):
@@ -218,8 +216,6 @@ class AuthThread(QThread):
                         elif ptype == 'usb_info_request':
                             devices = []
                             try:
-                                from usbmonitor import USBMonitor
-                                from usbmonitor.attributes import ID_MODEL, ID_MODEL_ID, ID_VENDOR_ID
                                 monitor = USBMonitor()
                                 devs = monitor.get_available_devices()
                                 for device_id, device_info in devs.items():
@@ -230,7 +226,7 @@ class AuthThread(QThread):
                             try:
                                 send_packet(ssl_sock, {
                                     'type': 'usb_info_response',
-                                    'devices': devices
+                                    'data': self.transport.encrypt_text(json.dumps(devices))
                                 })
                             except:
                                 pass
@@ -337,7 +333,7 @@ class ClientThread(QThread):
                             try:
                                 send_packet(self.socket, {
                                     'type': 'usb_info_response',
-                                    'devices': devices
+                                    'data': self.transport.encrypt_text(json.dumps(devices))
                                 })
                             except:
                                 pass
