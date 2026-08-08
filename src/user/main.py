@@ -749,7 +749,7 @@ class MainWindow(QMainWindow):
         return widget
 
     def append_chat_line(self, chat_display, line):
-        chat_display.append(html.escape(line))
+        chat_display.append(line)
         cursor = chat_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.setCharFormat(QTextCharFormat())
@@ -924,8 +924,13 @@ class MainWindow(QMainWindow):
 
     def on_file_notify_received(self, from_user, filename, chat_type, filesize, timestamp):
         play_alert_sound()
-        link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={self.username}">Скачать</a>&#8203;'
-        msg = f"[{timestamp}] {from_user}: [Файл] {filename} ({filesize} байт) {link}"
+        safe_from_user = html.escape(from_user)
+        safe_filename = html.escape(filename)
+        safe_timestamp = html.escape(timestamp)
+        safe_chat_type = html.escape(chat_type)
+        safe_to_user = html.escape(self.username)
+        link = f'<a href="download://?filename={safe_filename}&from={safe_from_user}&chat_type={safe_chat_type}&to={safe_to_user}">Скачать</a>&#8203;'
+        msg = f"[{safe_timestamp}] {safe_from_user}: [Файл] {safe_filename} ({filesize} байт) {link}"
         if chat_type == "general":
             self.append_chat_line(self.general_chat.chat_display, msg)
         else:
@@ -951,12 +956,14 @@ class MainWindow(QMainWindow):
                 else:
                     self.append_chat_line(self.private_chat.chat_display, f"[{timestamp}] {from_user}: {message}")
             elif msg.get('type') == 'file':
-                from_user = msg.get('from', 'Неизвестный')
-                filename = msg.get('filename', '')
+                from_user = html.escape(msg.get('from', 'Неизвестный'))
+                filename = html.escape(msg.get('filename', ''))
                 filesize = msg.get('filesize', 0)
-                timestamp = msg.get('timestamp', '')
+                timestamp = html.escape(msg.get('timestamp', ''))
                 chat_type = msg.get('chat_type', 'general')
-                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={self.username}">Скачать</a>&#8203;'
+                safe_chat_type = html.escape(chat_type)
+                safe_to_user = html.escape(self.username)
+                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={safe_chat_type}&to={safe_to_user}">Скачать</a>&#8203;'
                 line = f"[{timestamp}] {from_user}: [Файл] {filename} ({filesize} байт) {link}"
                 if chat_type == 'general':
                     self.append_chat_line(self.general_chat.chat_display, line)
@@ -973,6 +980,7 @@ class MainWindow(QMainWindow):
             self.append_chat_line(self.general_chat.chat_display, line)
         else:
             self.append_chat_line(self.private_chat.chat_display, line)
+
     def on_notification_received(self, message):
         play_alert_sound()
         QMessageBox.information(self, "Уведомление от Директора", message)
@@ -1017,13 +1025,16 @@ class MainWindow(QMainWindow):
             return
         current_tab = self.chat_tabs.currentWidget()
         tab_text = self.chat_tabs.tabText(self.chat_tabs.currentIndex())
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        safe_timestamp = html.escape(timestamp)
+        safe_message = html.escape(message)
         if tab_text == "Общий чат":
             if self.client_thread.send_message('general', message):
-                self.append_chat_line(self.general_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
+                self.append_chat_line(self.general_chat.chat_display, f"[{safe_timestamp}] Я: {safe_message}")
                 input_widget.clear()
         else:
             if self.client_thread.send_message('Director', message):
-                self.append_chat_line(self.private_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
+                self.append_chat_line(self.private_chat.chat_display, f"[{safe_timestamp}] Я: {safe_message}")
                 input_widget.clear()
 
     def on_usb_event(self, action, device_info):

@@ -794,13 +794,12 @@ class MainWindow(QMainWindow):
         self.start_server()
 
     def append_chat_line(self, chat_display, line):
-        safe_line = html.escape(line)
         cursor = chat_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         if not chat_display.document().isEmpty():
             cursor.insertBlock()
         cursor.setCharFormat(QTextCharFormat())
-        cursor.insertText(safe_line)
+        cursor.insertHtml(line)
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.setCharFormat(QTextCharFormat())
         chat_display.setTextCursor(cursor)
@@ -818,14 +817,22 @@ class MainWindow(QMainWindow):
             for from_user, to_user, msg, ts in history_messages:
                 try:
                     decrypted = crypto.decrypt_message(msg)
-                    display_name = "Я" if from_user == "Director" else from_user
-                    combined.append((ts, f"[{ts}] {display_name}: {decrypted}"))
+                    safe_from = html.escape(from_user)
+                    safe_decrypted = html.escape(decrypted)
+                    safe_ts = html.escape(ts)
+                    display_name = "Я" if from_user == "Director" else safe_from
+                    combined.append((ts, f"[{safe_ts}] {display_name}: {safe_decrypted}"))
                 except:
-                    combined.append((ts, f"[{ts}] {from_user}: [Зашифровано]"))
+                    safe_from = html.escape(from_user)
+                    safe_ts = html.escape(ts)
+                    combined.append((ts, f"[{safe_ts}] {safe_from}: [Зашифровано]"))
             for from_user, to_user, filename, filepath, filesize, ts in history_files:
-                display_name = "Я" if from_user == "Director" else from_user
-                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type=private&to={username}">Скачать</a>'
-                combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}&#8203;"))
+                safe_from = html.escape(from_user)
+                safe_filename = html.escape(filename)
+                safe_ts = html.escape(ts)
+                display_name = "Я" if from_user == "Director" else safe_from
+                link = f'<a href="download://?filename={safe_filename}&from={safe_from}&chat_type=private&to={html.escape(username)}">Скачать</a>'
+                combined.append((ts, f"[{safe_ts}] {display_name}: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;"))
             combined.sort(key=lambda x: x[0])
             for _, line in combined:
                 self.append_chat_line(chat_widget.chat_display, line)
@@ -957,17 +964,25 @@ class MainWindow(QMainWindow):
         for from_user, to_user, msg, ts in all_messages:
             try:
                 decrypted = crypto.decrypt_message(msg)
+                safe_from = html.escape(from_user)
+                safe_decrypted = html.escape(decrypted)
+                safe_ts = html.escape(ts)
                 if from_user == "Director":
-                    combined.append((ts, f"[{ts}] Я: {decrypted}"))
+                    combined.append((ts, f"[{safe_ts}] Я: {safe_decrypted}"))
                 else:
-                    combined.append((ts, f"[{ts}] {from_user}: {decrypted}"))
+                    combined.append((ts, f"[{safe_ts}] {safe_from}: {safe_decrypted}"))
             except:
-                combined.append((ts, f"[{ts}] {from_user}: [Зашифровано]"))
+                safe_from = html.escape(from_user)
+                safe_ts = html.escape(ts)
+                combined.append((ts, f"[{safe_ts}] {safe_from}: [Зашифровано]"))
         all_files = db.get_general_files()
         for from_user, to_user, filename, filepath, filesize, ts in all_files:
-            display_name = "Я" if from_user == "Director" else from_user
-            link = f'<a href="download://?filename={filename}&from={from_user}&chat_type=general&to=general">Скачать</a>'
-            combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}&#8203;"))
+            safe_from = html.escape(from_user)
+            safe_filename = html.escape(filename)
+            safe_ts = html.escape(ts)
+            display_name = "Я" if from_user == "Director" else safe_from
+            link = f'<a href="download://?filename={safe_filename}&from={safe_from}&chat_type=general&to=general">Скачать</a>'
+            combined.append((ts, f"[{safe_ts}] {display_name}: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;"))
         combined.sort(key=lambda x: x[0])
         for _, line in combined:
             self.append_chat_line(self.general_chat.chat_display, line)
@@ -1131,12 +1146,16 @@ class MainWindow(QMainWindow):
             filesize = os.path.getsize(file_path)
             db.save_file(chat_type, "Director", to_user, filename, filepath, filesize)
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            link = f'<a href="download://?filename={filename}&from=Director&chat_type={chat_type}&to={to_user}">Скачать</a>'
+            safe_timestamp = html.escape(timestamp)
+            safe_filename = html.escape(filename)
+            safe_to_user = html.escape(to_user)
+            safe_chat_type = html.escape(chat_type)
+            link = f'<a href="download://?filename={safe_filename}&from=Director&chat_type={safe_chat_type}&to={safe_to_user}">Скачать</a>'
             if chat_type == "general":
-                self.append_chat_line(self.general_chat.chat_display, f"[{timestamp}] Я: [Файл] {filename} ({filesize} байт) {link}&#8203;")
+                self.append_chat_line(self.general_chat.chat_display, f"[{safe_timestamp}] Я: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;")
             else:
                 if to_user in self.private_chats:
-                    self.append_chat_line(self.private_chats[to_user].chat_display, f"[{timestamp}] Я: [Файл] {filename} ({filesize} байт) {link}&#8203;")
+                    self.append_chat_line(self.private_chats[to_user].chat_display, f"[{safe_timestamp}] Я: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;")
             notify_data = {
                 'type': 'file_notify',
                 'from': 'Director',
@@ -1288,14 +1307,22 @@ class MainWindow(QMainWindow):
             for from_user, to_user, msg, ts in history_messages:
                 try:
                     decrypted = crypto.decrypt_message(msg)
-                    display_name = "Я" if from_user == "Director" else from_user
-                    combined.append((ts, f"[{ts}] {display_name}: {decrypted}"))
+                    safe_from = html.escape(from_user)
+                    safe_decrypted = html.escape(decrypted)
+                    safe_ts = html.escape(ts)
+                    display_name = "Я" if from_user == "Director" else safe_from
+                    combined.append((ts, f"[{safe_ts}] {display_name}: {safe_decrypted}"))
                 except:
-                    combined.append((ts, f"[{ts}] {from_user}: [Зашифровано]"))
+                    safe_from = html.escape(from_user)
+                    safe_ts = html.escape(ts)
+                    combined.append((ts, f"[{safe_ts}] {safe_from}: [Зашифровано]"))
             for from_user, to_user, filename, filepath, filesize, ts in history_files:
-                display_name = "Я" if from_user == "Director" else from_user
-                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type=private&to={username}">Скачать</a>'
-                combined.append((ts, f"[{ts}] {display_name}: [Файл] {filename} ({filesize} байт) {link}&#8203;"))
+                safe_from = html.escape(from_user)
+                safe_filename = html.escape(filename)
+                safe_ts = html.escape(ts)
+                display_name = "Я" if from_user == "Director" else safe_from
+                link = f'<a href="download://?filename={safe_filename}&from={safe_from}&chat_type=private&to={html.escape(username)}">Скачать</a>'
+                combined.append((ts, f"[{safe_ts}] {display_name}: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;"))
             combined.sort(key=lambda x: x[0])
             for _, line in combined:
                 self.append_chat_line(chat_widget.chat_display, line)
@@ -1313,8 +1340,13 @@ class MainWindow(QMainWindow):
 
     def on_file_received(self, from_user, to_user, filename, chat_type, filesize, timestamp):
         play_alert_sound()
-        link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={chat_type}&to={to_user}">Скачать</a>&#8203;'
-        line = f"[{timestamp}] {from_user}: [Файл] {filename} ({filesize} байт) {link}"
+        safe_from = html.escape(from_user)
+        safe_filename = html.escape(filename)
+        safe_timestamp = html.escape(timestamp)
+        safe_to = html.escape(to_user)
+        safe_chat_type = html.escape(chat_type)
+        link = f'<a href="download://?filename={safe_filename}&from={safe_from}&chat_type={safe_chat_type}&to={safe_to}">Скачать</a>&#8203;'
+        line = f"[{safe_timestamp}] {safe_from}: [Файл] {safe_filename} ({filesize} байт) {link}"
         if chat_type == "general":
             self.append_chat_line(self.general_chat.chat_display, line)
         else:
@@ -1325,9 +1357,7 @@ class MainWindow(QMainWindow):
 
     def on_message_received(self, from_user, message, to_user, chat_type):
         play_alert_sound()
-
         safe_from_user = html.escape(from_user)
-
         if from_user == "Director":
             display_message = message
         else:
@@ -1335,14 +1365,10 @@ class MainWindow(QMainWindow):
                 display_message = crypto.decrypt_message(message)
             except:
                 display_message = "[Decryption error]"
-
         safe_display_message = html.escape(display_message)
-
         timestamp = datetime.now().strftime('%H:%M:%S')
         safe_timestamp = html.escape(timestamp)
-
         line = f"[{safe_timestamp}] {safe_from_user}: {safe_display_message}"
-
         if chat_type == "general":
             self.append_chat_line(
                 self.general_chat.chat_display,
@@ -1361,10 +1387,13 @@ class MainWindow(QMainWindow):
             return
         current_tab = self.chat_tabs.currentWidget()
         tab_text = self.chat_tabs.tabText(self.chat_tabs.currentIndex())
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        safe_timestamp = html.escape(timestamp)
+        safe_message = html.escape(message)
         if tab_text == "Общий чат":
             encrypted = crypto.encrypt_message(message)
             db.save_message("general", "Director", "general", encrypted)
-            self.append_chat_line(self.general_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
+            self.append_chat_line(self.general_chat.chat_display, f"[{safe_timestamp}] Я: {safe_message}")
             for user, info in self.server_thread.clients.items():
                 try:
                     send_packet(info['socket'], {
@@ -1382,7 +1411,7 @@ class MainWindow(QMainWindow):
                 db.save_message("private", "Director", to_user, encrypted)
                 self.append_chat_line(
                     self.private_chats[to_user].chat_display,
-                    f"[{datetime.now().strftime('%H:%M:%S')}] Я: {message}")
+                    f"[{safe_timestamp}] Я: {safe_message}")
                 if to_user in self.server_thread.clients:
                     try:
                         send_packet(self.server_thread.clients[to_user]['socket'], {
