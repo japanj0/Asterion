@@ -9,6 +9,7 @@ import hashlib
 import time
 import base64
 import shutil
+import html
 from datetime import datetime
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -793,12 +794,13 @@ class MainWindow(QMainWindow):
         self.start_server()
 
     def append_chat_line(self, chat_display, line):
+        safe_line = html.escape(line)
         cursor = chat_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         if not chat_display.document().isEmpty():
             cursor.insertBlock()
         cursor.setCharFormat(QTextCharFormat())
-        cursor.insertHtml(line)
+        cursor.insertText(safe_line)
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.setCharFormat(QTextCharFormat())
         chat_display.setTextCursor(cursor)
@@ -1218,10 +1220,10 @@ class MainWindow(QMainWindow):
                     QMessageBox.warning(self, "Ошибка", f"Не удалось запросить информацию: {str(e)}")
 
     def on_usb_info_response(self, username, devices):
-        text = f"USB-устройства пользователя {username}:\n\n"
+        text = f"Инфо о пользователе: {username}:\n\n"
         if devices:
             for i, dev in enumerate(devices, 1):
-                text += f"{i}. {dev}\n"
+                text += f"{dev}\n"
         else:
             text += "Устройства не обнаружены или недоступны."
         QMessageBox.information(self, f"Инфо — {username}", text)
@@ -1323,6 +1325,9 @@ class MainWindow(QMainWindow):
 
     def on_message_received(self, from_user, message, to_user, chat_type):
         play_alert_sound()
+
+        safe_from_user = html.escape(from_user)
+
         if from_user == "Director":
             display_message = message
         else:
@@ -1330,15 +1335,25 @@ class MainWindow(QMainWindow):
                 display_message = crypto.decrypt_message(message)
             except:
                 display_message = "[Decryption error]"
+
+        safe_display_message = html.escape(display_message)
+
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        safe_timestamp = html.escape(timestamp)
+
+        line = f"[{safe_timestamp}] {safe_from_user}: {safe_display_message}"
+
         if chat_type == "general":
             self.append_chat_line(
                 self.general_chat.chat_display,
-                f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {display_message}")
+                line
+            )
         else:
             if from_user in self.private_chats:
                 self.append_chat_line(
                     self.private_chats[from_user].chat_display,
-                    f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {display_message}")
+                    line
+                )
 
     def send_message(self, input_widget):
         message = input_widget.text().strip()

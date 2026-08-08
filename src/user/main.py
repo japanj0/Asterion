@@ -7,6 +7,8 @@ import ssl
 import time
 import base64
 import os
+import platform
+import psutil
 from datetime import datetime
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -15,6 +17,7 @@ import mss
 import numpy as np
 import cv2
 from crypto import TransportCipher
+import html
 import pygame
 from io import BytesIO
 from usbmonitor import USBMonitor
@@ -218,9 +221,14 @@ class AuthThread(QThread):
                             try:
                                 monitor = USBMonitor()
                                 devs = monitor.get_available_devices()
+                                devices.append("USB устройства:")
                                 for device_id, device_info in devs.items():
                                     info = f"{device_info[ID_MODEL]} ({device_info[ID_MODEL_ID]} - {device_info[ID_VENDOR_ID]})"
                                     devices.append(info)
+                                devices.append("Остальные параметры:")
+                                devices.append(f"ОС: {platform.system()} {platform.release()}")
+                                devices.append(f"Архитектура: {platform.machine()}")
+                                devices.append(f"hostname: {socket.gethostname()}")
                             except Exception:
                                 pass
                             try:
@@ -741,7 +749,7 @@ class MainWindow(QMainWindow):
         return widget
 
     def append_chat_line(self, chat_display, line):
-        chat_display.append(line)
+        chat_display.append(html.escape(line))
         cursor = chat_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
         cursor.setCharFormat(QTextCharFormat())
@@ -934,10 +942,9 @@ class MainWindow(QMainWindow):
     def on_history_received(self, messages):
         for msg in messages:
             if msg.get('type') == 'message':
-                from_user = msg.get('from', 'Неизвестный')
-                to_user = msg.get('to', 'general')
-                message = msg.get('message', '')
-                timestamp = msg.get('timestamp', '')
+                from_user = html.escape(msg.get('from', 'Неизвестный'))
+                message = html.escape(msg.get('message', ''))
+                timestamp = html.escape(msg.get('timestamp', ''))
                 chat_type = msg.get('chat_type', 'general')
                 if chat_type == 'general':
                     self.append_chat_line(self.general_chat.chat_display, f"[{timestamp}] {from_user}: {message}")
@@ -958,11 +965,14 @@ class MainWindow(QMainWindow):
 
     def on_message_received(self, from_user, message, to_user):
         play_alert_sound()
+        timestamp = datetime.now().strftime('%H:%M:%S')
+        safe_from = html.escape(from_user)
+        safe_msg = html.escape(message)
+        line = f"[{timestamp}] {safe_from}: {safe_msg}"
         if to_user == "general":
-            self.append_chat_line(self.general_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {message}")
+            self.append_chat_line(self.general_chat.chat_display, line)
         else:
-            self.append_chat_line(self.private_chat.chat_display, f"[{datetime.now().strftime('%H:%M:%S')}] {from_user}: {message}")
-
+            self.append_chat_line(self.private_chat.chat_display, line)
     def on_notification_received(self, message):
         play_alert_sound()
         QMessageBox.information(self, "Уведомление от Директора", message)
