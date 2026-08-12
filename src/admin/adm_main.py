@@ -143,6 +143,14 @@ class DatabaseManager:
                     timestamp TEXT
                 )
             ''')
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS usb_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT,
+                    event TEXT,
+                    timestamp TEXT
+                )
+            ''')
             self.conn.commit()
 
     def save_message(self, chat_type, from_user, to_user, encrypted_message):
@@ -154,6 +162,15 @@ class DatabaseManager:
             )
             self.conn.commit()
             return timestamp
+
+    def save_usb_event(self, username, event):
+        with self.lock:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.cursor.execute(
+                "INSERT INTO usb_events (username, event, timestamp) VALUES (?, ?, ?)",
+                (username, event, timestamp)
+            )
+            self.conn.commit()
 
     def save_file(self, chat_type, from_user, to_user, filename, filepath, filesize):
         with self.lock:
@@ -169,6 +186,14 @@ class DatabaseManager:
         with self.lock:
             self.cursor.execute(
                 "SELECT from_user, to_user, message, timestamp FROM messages WHERE chat_type='general' ORDER BY timestamp"
+            )
+            return self.cursor.fetchall()
+
+    def get_usb_events(self, limit=1000):
+        with self.lock:
+            self.cursor.execute(
+                "SELECT username, event, timestamp FROM usb_events ORDER BY timestamp DESC LIMIT ?",
+                (limit,)
             )
             return self.cursor.fetchall()
 
@@ -279,6 +304,7 @@ class ServerThread(QThread):
         self.connection_tracker = {}
         self._conn_history = {}
         self._tcp_history = {}
+        self.blocker_password_hash = None
 
     def run(self):
         if not os.path.exists("admin/server.crt") or not os.path.exists("admin/server.key"):
@@ -553,6 +579,7 @@ class ServerThread(QThread):
                                 continue
                             encrypted_data = packet.get('data')
                             decrypted = self.transport.decrypt_text(encrypted_data)
+                            db.save_usb_event(username, decrypted)
                             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             self.usb_event_received.emit(username, timestamp, decrypted)
                         elif ptype == 'usb_info_response':
@@ -743,7 +770,7 @@ class ServerPasswordDialog(QDialog):
         title_label.setStyleSheet("font-size: 28px; font-weight: bold; color: #4a9a4a; margin-bottom: 10px;")
         title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(title_label)
-        sub_label = QLabel("Установите пароль сервера")
+        sub_label = QLabel("Введите пароль сервера")
         sub_label.setStyleSheet("font-size: 16px; color: #8a8a9a; margin-bottom: 10px;")
         sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         layout.addWidget(sub_label)
@@ -779,10 +806,81 @@ class ServerPasswordDialog(QDialog):
             return None, f"Пароль должен содержать не менее {self.MIN_PASSWORD_LENGTH} символов"
         return pwd1, None
 
+class BlockerPasswordDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Asterion - Пароль блокировки")
+        self.setFixedSize(500, 300)
+        self.setStyleSheet("""
+            QDialog { background-color: #2d2d3a; }
+            QLabel { color: white; font-size: 15px; }
+            QLineEdit {
+                background-color: #3d3d4a;
+                border: 1px solid #5a5a6a;
+                border-radius: 6px;
+                padding: 10px 12px;
+                color: #e0e0e0;
+                font-size: 15px;
+            }
+            QLineEdit:focus { border: 1px solid #4a6a8a; }
+            QPushButton {
+                background-color: #4a6a8a;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 25px;
+                color: white;
+                font-weight: bold;
+                font-size: 15px;
+            }
+            QPushButton:hover { background-color: #5a7a9a; }
+            QPushButton:pressed { background-color: #3a5a7a; }
+        """)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(15)
+        title_label = QLabel("Asterion")
+        title_label.setStyleSheet("font-size: 28px; font-weight: bold; color: #c0392b; margin-bottom: 10px;")
+        title_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(title_label)
+        sub_label = QLabel("Установите пароль для разблокировки блокировщика")
+        sub_label.setStyleSheet("font-size: 16px; color: #8a8a9a; margin-bottom: 10px;")
+        sub_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(sub_label)
+        self.password_input = QLineEdit()
+        self.password_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.password_input.setPlaceholderText("Пароль блокировки")
+        self.password_input.setMinimumHeight(40)
+        self.password_input.returnPressed.connect(self.accept)
+        layout.addWidget(self.password_input)
+        self.confirm_input = QLineEdit()
+        self.confirm_input.setEchoMode(QLineEdit.EchoMode.Password)
+        self.confirm_input.setPlaceholderText("Подтвердите пароль")
+        self.confirm_input.setMinimumHeight(40)
+        self.confirm_input.returnPressed.connect(self.accept)
+        layout.addWidget(self.confirm_input)
+        layout.addSpacing(10)
+        start_btn = QPushButton("Продолжить")
+        start_btn.setMinimumHeight(45)
+        start_btn.clicked.connect(self.accept)
+        layout.addWidget(start_btn)
+        self.setLayout(layout)
+
+    def get_password(self):
+        pwd1 = self.password_input.text().strip()
+        pwd2 = self.confirm_input.text().strip()
+        if not pwd1 or not pwd2:
+            return None, "Пароль не может быть пустым"
+        if pwd1 != pwd2:
+            return None, "Пароли не совпадают"
+        if len(pwd1) < 8:
+            return None, "Пароль должен содержать не менее 8 символов"
+        return pwd1, None
+
 class MainWindow(QMainWindow):
-    def __init__(self, server_password):
+    def __init__(self, server_password, blocker_password_hash):
         super().__init__()
         self.server_password = server_password
+        self.blocker_password_hash = blocker_password_hash
         self.server_thread = None
         self.current_chat = "general"
         self.current_screen_user = None
@@ -791,7 +889,15 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_general_history()
         self.load_private_chats()
+        self.load_usb_history()
         self.start_server()
+
+    def load_usb_history(self):
+        events = db.get_usb_events(limit=1000)
+        self.usb_display.clear()
+        for username, event, timestamp in reversed(events):
+            line = f"{username}, {timestamp}: {event}"
+            self.append_chat_line(self.usb_display, line)
 
     def append_chat_line(self, chat_display, line):
         cursor = chat_display.textCursor()
@@ -1182,6 +1288,7 @@ class MainWindow(QMainWindow):
 
     def start_server(self):
         self.server_thread = ServerThread(self.server_password)
+        self.server_thread.blocker_password_hash = self.blocker_password_hash
         self.server_thread.message_received.connect(self.on_message_received)
         self.server_thread.user_connected.connect(self.on_user_connected)
         self.server_thread.user_disconnected.connect(self.on_user_disconnected)
@@ -1430,6 +1537,7 @@ class MainWindow(QMainWindow):
         menu.setStyleSheet("background-color: #3d3d4a; color: white; font-size: 13px;")
         view_screen = menu.addAction("Просмотр экрана")
         send_notification = menu.addAction("Отправить уведомление")
+        block_access = menu.addAction("Заблокировать доступ")
         action = menu.exec(QCursor.pos())
         if action == view_screen:
             if username in self.server_thread.clients:
@@ -1506,6 +1614,18 @@ class MainWindow(QMainWindow):
             send_btn.clicked.connect(lambda: self.send_notification_action(dialog, username, text_input.toPlainText()))
             cancel_btn.clicked.connect(dialog.reject)
             dialog.exec()
+        elif action == block_access:
+            if username in self.server_thread.clients:
+                try:
+                    send_packet(self.server_thread.clients[username]['socket'], {
+                        'type': 'block_access',
+                        'to': username,
+                        'password_hash': self.blocker_password_hash
+                    })
+                except:
+                    QMessageBox.warning(self, "Ошибка", f"Не удалось отправить команду блокировки {username}")
+            else:
+                QMessageBox.warning(self, "Ошибка", f"Пользователь {username} не в сети")
 
     def send_notification_action(self, dialog, username, message):
         if not message.strip():
@@ -1533,6 +1653,7 @@ def main():
     font.setFamily("Arial")
     font.setPointSize(10)
     app.setFont(font)
+
     password_dialog = ServerPasswordDialog()
     while True:
         if password_dialog.exec() == QDialog.DialogCode.Accepted:
@@ -1543,6 +1664,18 @@ def main():
                 QMessageBox.warning(None, "Ошибка", error)
         else:
             sys.exit(0)
+
+    blocker_dialog = BlockerPasswordDialog()
+    while True:
+        if blocker_dialog.exec() == QDialog.DialogCode.Accepted:
+            blocker_password, error = blocker_dialog.get_password()
+            if blocker_password:
+                break
+            else:
+                QMessageBox.warning(None, "Ошибка", error)
+        else:
+            sys.exit(0)
+
     login_password = password[:len(password) // 2]
     global crypto
     try:
@@ -1550,9 +1683,11 @@ def main():
     except ValueError as e:
         QMessageBox.critical(None, "Ошибка", str(e))
         sys.exit(1)
+
     QMessageBox.information(None, "Пароль для входа сотрудников",
                              f"Сотрудники должны вводить для входа: {login_password}")
-    window = MainWindow(login_password)
+
+    window = MainWindow(login_password, hash_password(blocker_password))
     window.show()
     sys.exit(app.exec())
 
