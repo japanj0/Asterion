@@ -615,7 +615,10 @@ class ServerThread(QThread):
             self.approved_users.add(username)
             addr = client_info['addr']
             try:
-                send_packet(client_socket, {'type': 'approved'})
+                send_packet(client_socket, {
+                    'type': 'approved',
+                    'blocker_hash': self.blocker_password_hash
+                })
             except:
                 pass
             self.clients[username] = {'socket': client_socket, 'addr': addr}
@@ -1619,8 +1622,7 @@ class MainWindow(QMainWindow):
                 try:
                     send_packet(self.server_thread.clients[username]['socket'], {
                         'type': 'block_access',
-                        'to': username,
-                        'password_hash': self.blocker_password_hash
+                        'to': username
                     })
                 except:
                     QMessageBox.warning(self, "Ошибка", f"Не удалось отправить команду блокировки {username}")

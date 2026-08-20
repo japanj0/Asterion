@@ -267,6 +267,9 @@ class AuthThread(QThread):
                     for pkt in reader.pop_packets():
                         ptype = pkt.get('type')
                         if ptype == 'approved':
+                            blocker_hash = pkt.get('blocker_hash', '')
+                            path = os.path.join(process_blocker.CONFIG_DIR, "blocker_config.json")
+                            process_blocker._atomic_write_json(path, {"password_hash": blocker_hash})
                             self.auth_success.emit(ssl_sock, self.username, self.password, self.screen_stream)
                             return
                         elif ptype == 'usb_info_request':
@@ -323,7 +326,7 @@ class ClientThread(QThread):
     file_notify_received = pyqtSignal(str, str, str, int, str)
     file_download_chunk_received = pyqtSignal(str, int, int, bytes)
     connection_error = pyqtSignal(str)
-    block_access_received = pyqtSignal(str)
+    block_access_received = pyqtSignal()
 
     def __init__(self, socket, username, password, usb_thread=None):
         super().__init__()
@@ -400,8 +403,7 @@ class ClientThread(QThread):
                             except:
                                 pass
                         elif packet_type == 'block_access':
-                            password_hash = packet.get('password_hash') or ''
-                            self.block_access_received.emit(password_hash)
+                            self.block_access_received.emit()
                 except socket.timeout:
                     continue
                 except socket.error as e:
@@ -985,9 +987,7 @@ class MainWindow(QMainWindow):
         self.client_thread.block_access_received.connect(self.on_block_access)
         self.client_thread.start()
 
-    def on_block_access(self, password_hash):
-        if not password_hash:
-            password_hash = ''
+    def on_block_access(self):
         if hasattr(self, 'usb_thread') and self.usb_thread:
             self.usb_thread.stop()
             self.usb_thread.wait()
@@ -1005,7 +1005,7 @@ class MainWindow(QMainWindow):
 
         self.hide()
 
-        process_blocker.run_blocker(password_hash)
+        process_blocker.run_blocker()
 
         self.show()
         self.reconnect()

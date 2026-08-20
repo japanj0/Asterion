@@ -632,11 +632,17 @@ def setup_persistence():
         _setup_darwin_persistence(script_path)
 
 
-def run_blocker(password_hash, killer=None):
+def run_blocker(password_hash=None, killer=None):
+    if password_hash is None or password_hash == "":
+        config = _safe_read_json(CONFIG_PATH, {})
+        if not config:
+            config = _safe_read_json(CONFIG_BACKUP_PATH, {})
+        password_hash = config.get("password_hash", "")
+        if not password_hash:
+            return
     data = {"password_hash": password_hash}
     _atomic_write_json(CONFIG_PATH, data)
     try:
-
         shutil.copy2(CONFIG_PATH, CONFIG_BACKUP_PATH)
     except:
         pass
