@@ -294,6 +294,8 @@ class ServerThread(QThread):
         self.approved_users = set()
         self.running = True
         self.server_password_hash = hash_password(server_password)
+        self.heartbeat_interval = 10
+        self._heartbeat_thread = None
         self.transport = TransportCipher(server_password)
         self.file_receives = {}
         self.auth_attempts = {}
@@ -316,6 +318,8 @@ class ServerThread(QThread):
         self.server.settimeout(1.0)
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.load_cert_chain("admin/server.crt", "admin/server.key")
+        self._heartbeat_thread = threading.Thread(target=self._heartbeat_loop, daemon=True)
+        self._heartbeat_thread.start()
         while self.running:
             try:
                 if threading.active_count() > self.max_threads:
@@ -396,6 +400,25 @@ class ServerThread(QThread):
                 continue
             except Exception:
                 break
+    def _heartbeat_loop(self):
+        while self.running:
+            time.sleep(self.heartbeat_interval)
+            if not self.running:
+                break
+            dead = []
+            for username, info in list(self.clients.items()):
+                try:
+                    send_packet(info['socket'], {'type': 'ping'})
+                except:
+                    dead.append(username)
+            for username in dead:
+                try:
+                    self.clients[username]['socket'].close()
+                except:
+                    pass
+                if username in self.clients:
+                    del self.clients[username]
+                self.user_disconnected.emit(username)
 
     def handle_client(self, client_socket, username):
         client_socket.settimeout(60.0)
@@ -404,7 +427,7 @@ class ServerThread(QThread):
         ALLOWED_TYPES = {
             'message', 'screen', 'stop_screen',
             'file_start', 'file_chunk', 'file_end', 'file_request',
-            'usb_event', 'usb_info_response'
+            'usb_event', 'usb_info_response', 'pong'
         }
         try:
             while self.running:
@@ -590,6 +613,8 @@ class ServerThread(QThread):
                             except Exception:
                                 devices = []
                             self.usb_info_response_received.emit(username, devices)
+                        elif ptype == 'pong':
+                            pass
                     except Exception:
                         pass
         except Exception:

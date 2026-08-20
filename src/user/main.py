@@ -339,6 +339,8 @@ class ClientThread(QThread):
         self.transport = TransportCipher(password)
         self.screen_stream = None
         self.usb_thread = usb_thread
+        self._last_seen_lock = threading.Lock()
+        self.last_seen = time.time()
 
     def set_screen_stream(self, stream):
         if self.screen_stream:
@@ -358,6 +360,8 @@ class ClientThread(QThread):
                         break
                     self.reader.feed(data)
                     for packet in self.reader.pop_packets():
+                        with self._last_seen_lock:
+                            self.last_seen = time.time()
                         packet_type = packet.get('type')
                         if packet_type == 'message':
                             from_user = packet.get('from', 'Неизвестный')
@@ -404,6 +408,11 @@ class ClientThread(QThread):
                                 pass
                         elif packet_type == 'block_access':
                             self.block_access_received.emit()
+                        elif packet_type == 'ping':
+                            try:
+                                send_packet(self.socket, {'type': 'pong'})
+                            except:
+                                pass
                 except socket.timeout:
                     continue
                 except socket.error as e:
@@ -647,6 +656,18 @@ class MainWindow(QMainWindow):
         self.usb_thread.event_detected.connect(self.on_usb_event)
         self.usb_thread.start()
         self.start_client_thread()
+        self._watchdog_timer = QTimer()
+        self._watchdog_timer.timeout.connect(self._check_connection)
+        self._watchdog_timer.start(5000)
+
+    def _check_connection(self):
+        if not self.client_thread:
+            return
+        with self.client_thread._last_seen_lock:
+            last = self.client_thread.last_seen
+        if time.time() - last > 30:
+            self._watchdog_timer.stop()
+            self.on_block_access()
 
     def init_ui(self):
         self.setWindowTitle(f"Asterion - {self.username}")
@@ -1049,7 +1070,7 @@ class MainWindow(QMainWindow):
             self.usb_thread.wait()
         self.close()
         QMessageBox.critical(None, "Ошибка подключения", f"Соединение потеряно: {error}")
-        QApplication.quit()
+        self.on_block_access()
 
     def on_history_received(self, messages):
         for msg in messages:
