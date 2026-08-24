@@ -72,6 +72,28 @@ def _safe_read_json(path, default=None):
     return default
 
 
+_singleton_lock_fd = None
+
+def _acquire_singleton_lock():
+    global _singleton_lock_fd
+    if platform.system() == "Windows":
+        return True
+    lock_path = os.path.join(CONFIG_DIR, "singleton.lock")
+    try:
+        fd = os.open(lock_path, os.O_CREAT | os.O_RDWR)
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _singleton_lock_fd = fd
+        return True
+    except (IOError, OSError, ImportError):
+        try:
+            if 'fd' in dir() and fd is not None:
+                os.close(fd)
+        except Exception:
+            pass
+        return False
+
+
 class ProcessKillerThread(threading.Thread):
     def __init__(self):
         super().__init__(daemon=True)
@@ -504,23 +526,6 @@ def _setup_windows_persistence(script_path):
 
 
 def _setup_linux_persistence(script_path):
-    autostart_dir = os.path.expanduser("~/.config/autostart")
-    os.makedirs(autostart_dir, exist_ok=True)
-    desktop_path = os.path.join(autostart_dir, "asterion-blocker.desktop")
-
-    desktop_content = f"""[Desktop Entry]
-Type=Application
-Name=AsterionBlocker
-Exec={sys.executable} {script_path}
-Hidden=false
-NoDisplay=false
-X-GNOME-Autostart-enabled=true
-Terminal=false
-"""
-    with open(desktop_path, "w") as f:
-        f.write(desktop_content)
-    os.chmod(desktop_path, 0o755)
-
     systemd_dir = os.path.expanduser("~/.config/systemd/user")
     os.makedirs(systemd_dir, exist_ok=True)
     service_path = os.path.join(systemd_dir, "asterion-blocker.service")
@@ -532,37 +537,67 @@ After=graphical-session.target
 [Service]
 Type=simple
 ExecStart={sys.executable} {script_path}
-Restart=always
-RestartSec=5
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=default.target
 """
-    with open(service_path, "w") as f:
-        f.write(service_content)
+    need_update = True
+    if os.path.exists(service_path):
+        try:
+            with open(service_path, 'r', encoding='utf-8') as f:
+                if f.read().strip() == service_content.strip():
+                    need_update = False
+        except:
+            pass
 
+    if need_update:
+        try:
+            with open(service_path, 'w', encoding='utf-8') as f:
+                f.write(service_content)
+            subprocess.run(
+                ["systemctl", "--user", "daemon-reload"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+            )
+        except:
+            pass
     try:
-        subprocess.run(["systemctl", "--user", "daemon-reload"],
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        subprocess.run(["systemctl", "--user", "enable", "asterion-blocker"],
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        result = subprocess.run(
+            ["systemctl", "--user", "is-enabled", "asterion-blocker"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        if result.returncode != 0:
+            subprocess.run(
+                ["systemctl", "--user", "enable", "asterion-blocker"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+            )
     except:
         pass
-
-    cron_path = os.path.expanduser("~/.config/asterion/cron_backup.sh")
-    os.makedirs(os.path.dirname(cron_path), exist_ok=True)
-    with open(cron_path, "w") as f:
-        f.write(f"#!/bin/bash\n{sys.executable} {script_path} &\n")
-    os.chmod(cron_path, 0o755)
-
+    desktop_path = os.path.join(os.path.expanduser("~/.config/autostart"), "asterion-blocker.desktop")
+    if os.path.exists(desktop_path):
+        try:
+            os.remove(desktop_path)
+        except:
+            pass
+    old_cron_script = os.path.expanduser("~/.config/asterion/cron_backup.sh")
+    if os.path.exists(old_cron_script):
+        try:
+            os.remove(old_cron_script)
+        except:
+            pass
     try:
-        cron_line = f"@reboot {cron_path}\n"
         result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-        existing = result.stdout if result.returncode == 0 else ""
-        if cron_path not in existing:
-            new_cron = existing + cron_line
-            proc = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE, text=True)
-            proc.communicate(input=new_cron)
+        if result.returncode == 0:
+            lines = result.stdout.splitlines()
+            new_lines = [line for line in lines
+                        if "asterion" not in line.lower() and "cron_backup.sh" not in line]
+            new_cron = "\n".join(new_lines)
+            if new_cron:
+                new_cron += "\n"
+            if new_cron != result.stdout:
+                proc = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE, text=True)
+                proc.communicate(input=new_cron)
     except:
         pass
 
@@ -594,28 +629,51 @@ def _setup_darwin_persistence(script_path):
     <integer>10</integer>
 </dict>
 </plist>"""
-    with open(plist_path, "w") as f:
-        f.write(plist_content)
 
+    need_update = True
+    if os.path.exists(plist_path):
+        try:
+            with open(plist_path, 'r', encoding='utf-8') as f:
+                if f.read().strip() == plist_content.strip():
+                    need_update = False
+        except:
+            pass
+
+    if need_update:
+        try:
+            with open(plist_path, 'w', encoding='utf-8') as f:
+                f.write(plist_content)
+        except:
+            pass
     try:
-        subprocess.run(["launchctl", "load", plist_path],
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        subprocess.run(
+            ["launchctl", "unload", plist_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        subprocess.run(
+            ["launchctl", "load", plist_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+        )
     except:
         pass
-
-    cron_path = os.path.expanduser("~/.asterion_blocker.sh")
-    with open(cron_path, "w") as f:
-        f.write(f"#!/bin/bash\n{sys.executable} {script_path} &\n")
-    os.chmod(cron_path, 0o755)
-
+    old_cron_script = os.path.expanduser("~/.asterion_blocker.sh")
+    if os.path.exists(old_cron_script):
+        try:
+            os.remove(old_cron_script)
+        except:
+            pass
     try:
-        cron_line = f"@reboot {cron_path}\n"
         result = subprocess.run(["crontab", "-l"], capture_output=True, text=True)
-        existing = result.stdout if result.returncode == 0 else ""
-        if cron_path not in existing:
-            new_cron = existing + cron_line
-            proc = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE, text=True)
-            proc.communicate(input=new_cron)
+        if result.returncode == 0:
+            lines = result.stdout.splitlines()
+            new_lines = [line for line in lines
+                        if "asterion" not in line.lower() and ".asterion_blocker.sh" not in line]
+            new_cron = "\n".join(new_lines)
+            if new_cron:
+                new_cron += "\n"
+            if new_cron != result.stdout:
+                proc = subprocess.Popen(["crontab", "-"], stdin=subprocess.PIPE, text=True)
+                proc.communicate(input=new_cron)
     except:
         pass
 
@@ -633,6 +691,9 @@ def setup_persistence():
 
 
 def run_blocker(password_hash=None, killer=None):
+    if not _acquire_singleton_lock():
+        sys.exit(0)
+
     if password_hash is None or password_hash == "":
         config = _safe_read_json(CONFIG_PATH, {})
         if not config:
