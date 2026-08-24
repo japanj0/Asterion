@@ -620,12 +620,18 @@ class ServerThread(QThread):
         except Exception:
             pass
         finally:
-            client_ip = client_socket.getpeername()[0]
-            if client_ip in self.connection_tracker:
-                self.connection_tracker[client_ip] -= 1
-                if self.connection_tracker[client_ip] <= 0:
-                    del self.connection_tracker[client_ip]
-            client_socket.close()
+            try:
+                client_ip = client_socket.getpeername()[0]
+                if client_ip in self.connection_tracker:
+                    self.connection_tracker[client_ip] -= 1
+                    if self.connection_tracker[client_ip] <= 0:
+                        del self.connection_tracker[client_ip]
+            except OSError:
+                pass
+            try:
+                client_socket.close()
+            except Exception:
+                pass
             self.user_disconnected.emit(username)
             if username in self.clients:
                 del self.clients[username]

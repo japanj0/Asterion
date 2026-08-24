@@ -341,6 +341,11 @@ class ClientThread(QThread):
         self.usb_thread = usb_thread
         self._last_seen_lock = threading.Lock()
         self.last_seen = time.time()
+        self._intentional_close = False
+        try:
+            self.socket.settimeout(2.0)
+        except Exception:
+            pass
 
     def set_screen_stream(self, stream):
         if self.screen_stream:
@@ -416,10 +421,12 @@ class ClientThread(QThread):
                 except socket.timeout:
                     continue
                 except socket.error as e:
-                    self.connection_error.emit(f"Ошибка сокета: {str(e)}")
+                    if not self._intentional_close:
+                        self.connection_error.emit(f"Ошибка сокета: {str(e)}")
                     break
                 except Exception as e:
-                    self.connection_error.emit(f"Ошибка: {str(e)}")
+                    if not self._intentional_close:
+                        self.connection_error.emit(f"Ошибка: {str(e)}")
                     break
         except Exception as e:
             self.connection_error.emit(f"Ошибка: {str(e)}")
@@ -650,6 +657,9 @@ class MainWindow(QMainWindow):
         self.download_progress = None
         self.is_processing_download = False
         self.screen_stream = screen_stream
+        if self.screen_stream:
+            self.screen_stream.stop_stream()
+            self.screen_stream = None
         self.init_ui()
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
         self.usb_thread = USBMonitorThread()
@@ -1013,16 +1023,25 @@ class MainWindow(QMainWindow):
             self.usb_thread.stop()
             self.usb_thread.wait()
         if self.client_thread:
+            self.client_thread._intentional_close = True
+        if self.sock:
+            try:
+                self.sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                self.sock.close()
+            except Exception:
+                pass
+        if self.client_thread:
             self.client_thread.stop()
-            self.client_thread.wait()
+            self.client_thread.wait(3000)
         if self.screen_timer:
             self.screen_timer.stop()
             self.screen_timer = None
-        if self.sock:
-            try:
-                self.sock.close()
-            except:
-                pass
+        if self.screen_stream:
+            self.screen_stream.stop_stream()
+            self.screen_stream = None
 
         self.hide()
 
@@ -1040,7 +1059,7 @@ class MainWindow(QMainWindow):
             self.download_progress.close()
             self.download_progress = None
         self.download_buffers = {}
-
+        self.screen_stream = None
         dialog = LoginDialog()
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self.sock, self.username, self.password, screen_stream = dialog.get_socket_and_credentials()
@@ -1122,6 +1141,9 @@ class MainWindow(QMainWindow):
         if self.screen_timer:
             self.screen_timer.stop()
             self.screen_timer = None
+        if self.screen_stream:
+            self.screen_stream.stop_stream()
+            self.screen_stream = None
 
     def start_screen_stream(self):
         if self.screen_timer is None:
