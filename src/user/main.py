@@ -212,7 +212,7 @@ class USBMonitorThread(QThread):
         self.running = False
 
 class AuthThread(QThread):
-    auth_success = pyqtSignal(object, str, str, object)
+    auth_success = pyqtSignal(object, str, str, object, list)
     auth_failed = pyqtSignal(str)
     connection_error = pyqtSignal(str)
     pending_status = pyqtSignal()
@@ -264,14 +264,15 @@ class AuthThread(QThread):
                     if not chunk:
                         break
                     reader.feed(chunk)
-                    for pkt in reader.pop_packets():
+                    packets = reader.pop_packets()
+                    approved_pkt = None
+                    pending_packets = []
+                    for pkt in packets:
                         ptype = pkt.get('type')
                         if ptype == 'approved':
-                            blocker_hash = pkt.get('blocker_hash', '')
-                            path = os.path.join(process_blocker.CONFIG_DIR, "blocker_config.json")
-                            process_blocker._atomic_write_json(path, {"password_hash": blocker_hash})
-                            self.auth_success.emit(ssl_sock, self.username, self.password, self.screen_stream)
-                            return
+                            approved_pkt = pkt
+                        elif approved_pkt is not None:
+                            pending_packets.append(pkt)
                         elif ptype == 'usb_info_request':
                             devices = []
                             try:
@@ -305,9 +306,14 @@ class AuthThread(QThread):
                                 self.screen_stream = ScreenStream(ssl_sock, self.transport)
                             self.screen_stream.start_stream()
                             self.screen_request.emit(self.screen_stream)
-                        elif ptype == 'stop_screen':
-                            if self.screen_stream:
-                                self.screen_stream.stop_stream()
+
+                    if approved_pkt is not None:
+                        blocker_hash = approved_pkt.get('blocker_hash', '')
+                        path = os.path.join(process_blocker.CONFIG_DIR, "blocker_config.json")
+                        process_blocker._atomic_write_json(path, {"password_hash": blocker_hash})
+                        self.auth_success.emit(ssl_sock, self.username, self.password, self.screen_stream, pending_packets)
+                        return
+
                 except socket.timeout:
                     continue
                 except Exception as e:
@@ -328,7 +334,7 @@ class ClientThread(QThread):
     connection_error = pyqtSignal(str)
     block_access_received = pyqtSignal()
 
-    def __init__(self, socket, username, password, usb_thread=None):
+    def __init__(self, socket, username, password, usb_thread=None, initial_packets=None):
         super().__init__()
         self.socket = socket
         self.username = username
@@ -342,6 +348,7 @@ class ClientThread(QThread):
         self._last_seen_lock = threading.Lock()
         self.last_seen = time.time()
         self._intentional_close = False
+        self.initial_packets = initial_packets or []
         try:
             self.socket.settimeout(2.0)
         except Exception:
@@ -356,8 +363,66 @@ class ClientThread(QThread):
             stream.transport = self.transport
             stream.start_stream()
 
+    def _process_packet(self, packet):
+        with self._last_seen_lock:
+            self.last_seen = time.time()
+        packet_type = packet.get('type')
+        if packet_type == 'message':
+            from_user = packet.get('from', 'Неизвестный')
+            message = self.transport.decrypt_text(packet.get('message', ''))
+            to_user = packet.get('to', 'general')
+            self.message_received.emit(from_user, message, to_user)
+        elif packet_type == 'notification':
+            message = self.transport.decrypt_text(packet.get('message', ''))
+            self.notification_received.emit(message)
+        elif packet_type == 'request_screen':
+            self.screen_requested.emit()
+        elif packet_type == 'stop_screen':
+            self.stop_screen_requested.emit()
+        elif packet_type == 'history':
+            messages = packet.get('messages', [])
+            for msg in messages:
+                if msg.get('type') == 'message':
+                    msg['message'] = self.transport.decrypt_text(msg.get('message', ''))
+            self.history_received.emit(messages)
+        elif packet_type == 'file_notify':
+            from_user = packet.get('from')
+            filename = packet.get('filename')
+            chat_type = packet.get('chat_type')
+            filesize = packet.get('filesize')
+            timestamp = packet.get('timestamp')
+            self.file_notify_received.emit(from_user, filename, chat_type, filesize, timestamp)
+        elif packet_type == 'file_download_chunk':
+            file_id = packet.get('file_id')
+            chunk_index = packet.get('chunk_index')
+            total_chunks = packet.get('total_chunks')
+            data_token = packet.get('data')
+            chunk_data = self.transport.decrypt_bytes(data_token)
+            self.file_download_chunk_received.emit(file_id, chunk_index, total_chunks, chunk_data)
+        elif packet_type == 'usb_info_request':
+            devices = []
+            if self.usb_thread:
+                devices = self.usb_thread.get_current_devices()
+            try:
+                send_packet(self.socket, {
+                    'type': 'usb_info_response',
+                    'data': self.transport.encrypt_text(json.dumps(devices))
+                })
+            except:
+                pass
+        elif packet_type == 'block_access':
+            self.block_access_received.emit()
+        elif packet_type == 'ping':
+            try:
+                send_packet(self.socket, {'type': 'pong'})
+            except:
+                pass
+
     def run(self):
         try:
+            for packet in self.initial_packets:
+                self._process_packet(packet)
+
             while self.running:
                 try:
                     data = self.socket.recv(4096)
@@ -365,59 +430,7 @@ class ClientThread(QThread):
                         break
                     self.reader.feed(data)
                     for packet in self.reader.pop_packets():
-                        with self._last_seen_lock:
-                            self.last_seen = time.time()
-                        packet_type = packet.get('type')
-                        if packet_type == 'message':
-                            from_user = packet.get('from', 'Неизвестный')
-                            message = self.transport.decrypt_text(packet.get('message', ''))
-                            to_user = packet.get('to', 'general')
-                            self.message_received.emit(from_user, message, to_user)
-                        elif packet_type == 'notification':
-                            message = self.transport.decrypt_text(packet.get('message', ''))
-                            self.notification_received.emit(message)
-                        elif packet_type == 'request_screen':
-                            self.screen_requested.emit()
-                        elif packet_type == 'stop_screen':
-                            self.stop_screen_requested.emit()
-                        elif packet_type == 'history':
-                            messages = packet.get('messages', [])
-                            for msg in messages:
-                                if msg.get('type') == 'message':
-                                    msg['message'] = self.transport.decrypt_text(msg.get('message', ''))
-                            self.history_received.emit(messages)
-                        elif packet_type == 'file_notify':
-                            from_user = packet.get('from')
-                            filename = packet.get('filename')
-                            chat_type = packet.get('chat_type')
-                            filesize = packet.get('filesize')
-                            timestamp = packet.get('timestamp')
-                            self.file_notify_received.emit(from_user, filename, chat_type, filesize, timestamp)
-                        elif packet_type == 'file_download_chunk':
-                            file_id = packet.get('file_id')
-                            chunk_index = packet.get('chunk_index')
-                            total_chunks = packet.get('total_chunks')
-                            data_token = packet.get('data')
-                            chunk_data = self.transport.decrypt_bytes(data_token)
-                            self.file_download_chunk_received.emit(file_id, chunk_index, total_chunks, chunk_data)
-                        elif packet_type == 'usb_info_request':
-                            devices = []
-                            if self.usb_thread:
-                                devices = self.usb_thread.get_current_devices()
-                            try:
-                                send_packet(self.socket, {
-                                    'type': 'usb_info_response',
-                                    'data': self.transport.encrypt_text(json.dumps(devices))
-                                })
-                            except:
-                                pass
-                        elif packet_type == 'block_access':
-                            self.block_access_received.emit()
-                        elif packet_type == 'ping':
-                            try:
-                                send_packet(self.socket, {'type': 'pong'})
-                            except:
-                                pass
+                        self._process_packet(packet)
                 except socket.timeout:
                     continue
                 except socket.error as e:
@@ -513,6 +526,7 @@ class LoginDialog(QDialog):
         self.pending = False
         self.socket = None
         self.screen_stream = None
+        self.pending_packets = []
         self.init_ui()
 
     def init_ui(self):
@@ -619,11 +633,12 @@ class LoginDialog(QDialog):
         self.status_label.setText("Ожидание одобрения администратором...")
         self.status_label.show()
 
-    def on_auth_success(self, sock, username, password, screen_stream):
+    def on_auth_success(self, sock, username, password, screen_stream, pending_packets):
         self.socket = sock
         self.username = username
         self.password = password
         self.screen_stream = screen_stream
+        self.pending_packets = pending_packets
         self.accept()
 
     def on_auth_failed(self, error):
@@ -641,10 +656,10 @@ class LoginDialog(QDialog):
         sys.exit(1)
 
     def get_socket_and_credentials(self):
-        return self.socket, self.username, self.password, self.screen_stream
+        return self.socket, self.username, self.password, self.screen_stream, self.pending_packets
 
 class MainWindow(QMainWindow):
-    def __init__(self, sock, username, password, screen_stream=None):
+    def __init__(self, sock, username, password, screen_stream=None, pending_packets=None):
         super().__init__()
         self.sock = sock
         self.username = username
@@ -660,6 +675,7 @@ class MainWindow(QMainWindow):
         if self.screen_stream:
             self.screen_stream.stop_stream()
             self.screen_stream = None
+        self.pending_packets = pending_packets or []
         self.init_ui()
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
         self.usb_thread = USBMonitorThread()
@@ -904,7 +920,7 @@ class MainWindow(QMainWindow):
             self.download_progress.close()
 
     def on_file_download_chunk(self, file_id, chunk_index, total_chunks, chunk_data):
-        for save_path, info in self.download_buffers.items():
+        for save_path, info in list(self.download_buffers.items()):
             if info['file_id'] is None:
                 info['file_id'] = file_id
                 info['total_chunks'] = total_chunks
@@ -917,16 +933,197 @@ class MainWindow(QMainWindow):
                     if self.download_progress:
                         self.download_progress.setValue(100)
                     try:
+                        raw_data = b"".join(info['chunks'][i] for i in range(total_chunks))
+                        stego_data = self.embed_stego(raw_data)
                         with open(save_path, "wb") as f:
-                            for i in range(total_chunks):
-                                f.write(info['chunks'][i])
+                            f.write(stego_data)
                         QMessageBox.information(self, "Успех", f"Файл {info['filename']} сохранён")
                     except Exception as e:
                         QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл: {str(e)}")
                     if self.download_progress:
                         self.download_progress.close()
-                    del self.download_buffers[save_path]
+                    if save_path in self.download_buffers:
+                        del self.download_buffers[save_path]
 
+    def embed_stego(self, data):
+        chain = self.username
+        try:
+            old_enc = None
+            if data.startswith(b'\x89PNG\r\n\x1a\n'):
+                i = 8
+                while i < len(data):
+                    l = int.from_bytes(data[i:i+4], 'big')
+                    t = data[i+4:i+8]
+                    if t == b'tEXt':
+                        c = data[i+8:i+8+l]
+                        if c.startswith(b'asterion\x00'):
+                            old_enc = c[9:].decode('utf-8')
+                            break
+                    i += 12 + l
+            elif data.startswith(b'\xff\xd8\xff'):
+                i = 2
+                while i < len(data) - 1:
+                    if data[i] == 0xFF and data[i+1] == 0xFE:
+                        l = int.from_bytes(data[i+2:i+4], 'big')
+                        c = data[i+4:i+4+l-2]
+                        if c.startswith(b'asterion\x00'):
+                            old_enc = c[9:].decode('utf-8')
+                            break
+                    elif data[i] == 0xFF and data[i+1] not in (0x00, 0xD9):
+                        l = int.from_bytes(data[i+2:i+4], 'big')
+                        i += 2 + l
+                    else:
+                        i += 1
+            elif data.startswith(b'GIF8'):
+                i = 0
+                while i < len(data) - 1:
+                    if data[i] == 0x21 and data[i+1] == 0xFE:
+                        i += 2
+                        p = []
+                        while True:
+                            if i >= len(data):
+                                break
+                            s = data[i]
+                            i += 1
+                            if s == 0:
+                                break
+                            p.append(data[i:i+s])
+                            i += s
+                        c = b''.join(p)
+                        if c.startswith(b'asterion\x00'):
+                            old_enc = c[9:].decode('utf-8')
+                            break
+                    i += 1
+            else:
+                try:
+                    text = data.decode('utf-8')
+                    bits = []
+                    for ch in text:
+                        if ch == '\u200b':
+                            bits.append(0)
+                        elif ch == '\u200c':
+                            bits.append(1)
+                    if len(bits) >= 32:
+                        l = 0
+                        for i in range(32):
+                            l = (l << 1) | bits[i]
+                        if 0 < l <= (len(bits) - 32) // 8:
+                            eb = bits[32:32+l*8]
+                            bb = bytearray(l)
+                            for i in range(l):
+                                b = 0
+                                for j in range(8):
+                                    b = (b << 1) | eb[i*8+j]
+                                bb[i] = b
+                            old_enc = bytes(bb).decode('utf-8')
+                except:
+                    try:
+                        l = int.from_bytes(data[-4:], 'big')
+                        if 0 < l <= len(data) - 4:
+                            enc_data = data[-(4+l):-4]
+                            test = self.client_thread.transport.decrypt_text(enc_data.decode('utf-8'))
+                            if test and not test.startswith('['):
+                                old_enc = enc_data.decode('utf-8')
+                    except:
+                        pass
+            if old_enc:
+                old = self.client_thread.transport.decrypt_text(old_enc)
+                if old and not old.startswith('['):
+                    chain = old + '_' + self.username
+        except:
+            pass
+        try:
+            enc = self.client_thread.transport.encrypt_text(chain).encode('utf-8')
+            payload = len(enc).to_bytes(4, 'big') + enc
+        except:
+            return data
+        if data.startswith(b'\x89PNG\r\n\x1a\n'):
+            import zlib
+            sig = data[:8]
+            chunks = []
+            i = 8
+            while i < len(data):
+                l = int.from_bytes(data[i:i+4], 'big')
+                t = data[i+4:i+8]
+                c = data[i+8:i+8+l]
+                if t == b'tEXt' and c.startswith(b'asterion\x00'):
+                    i += 12 + l
+                    continue
+                if t == b'IEND':
+                    td = b'asterion\x00' + payload
+                    tl = len(td)
+                    tc = zlib.crc32(b'tEXt' + td) & 0xffffffff
+                    chunks.append(tl.to_bytes(4, 'big') + b'tEXt' + td + tc.to_bytes(4, 'big'))
+                chunks.append(data[i:i+12+l])
+                i += 12 + l
+            return sig + b''.join(chunks)
+        elif data.startswith(b'\xff\xd8\xff'):
+            marked = b'asterion\x00' + payload
+            com = b'\xff\xfe' + (2 + len(marked)).to_bytes(2, 'big') + marked
+            return data[:2] + com + data[2:]
+        elif data.startswith(b'GIF8'):
+            idx = data.rfind(b'\x3b')
+            if idx == -1:
+                return data
+            marked = b'asterion\x00' + payload
+            blocks = []
+            o = 0
+            while o < len(marked):
+                ch = marked[o:o+255]
+                blocks.append(bytes([len(ch)]) + ch)
+                o += 255
+            ext = b'\x21\xfe' + b''.join(blocks) + b'\x00'
+            return data[:idx] + ext + data[idx:]
+        else:
+            try:
+                text = data.decode('utf-8')
+                clean = text.replace('\u200b', '').replace('\u200c', '')
+                bits = []
+                for b in payload:
+                    for i in range(7, -1, -1):
+                        bits.append((b >> i) & 1)
+                stego = ''.join('\u200b' if b == 0 else '\u200c' for b in bits)
+                prefix = None
+                for line in clean.splitlines():
+                    s = line.strip()
+                    if s.startswith(('#', 'import ', 'from ', 'def ', 'class ', '@')):
+                        prefix = '# '
+                        break
+                    if s.startswith(('// ', '/*', 'function ', 'const ', 'let ', 'var ')):
+                        prefix = '// '
+                        break
+                    if s.startswith(('<!--', '<!DOCTYPE', '<?xml', '<html')):
+                        prefix = None
+                        break
+                if prefix is None and any(line.strip().startswith('<') for line in clean.splitlines()):
+                    if clean.endswith('\n'):
+                        return (clean + '<!--' + stego + '-->\n').encode('utf-8')
+                    else:
+                        return (clean + '\n<!--' + stego + '-->\n').encode('utf-8')
+                if prefix:
+                    if clean.endswith('\n'):
+                        return (clean + prefix + stego + '\n').encode('utf-8')
+                    else:
+                        return (clean + '\n' + prefix + stego + '\n').encode('utf-8')
+                if '\n' in clean:
+                    lines = clean.splitlines(keepends=True)
+                    if lines[-1].endswith('\n'):
+                        lines[-1] = lines[-1].rstrip('\n') + stego + '\n'
+                    else:
+                        lines[-1] = lines[-1] + stego
+                    return ''.join(lines).encode('utf-8')
+                return (clean + stego).encode('utf-8')
+            except:
+                try:
+                    l = int.from_bytes(data[-4:], 'big')
+                    if 0 < l < len(data) - 4:
+                        enc_data = data[-(4+l):-4]
+                        test = self.client_thread.transport.decrypt_text(enc_data.decode('utf-8'))
+                        if test and not test.startswith('['):
+                            data = data[:-(4+l)]
+                except:
+                    pass
+                return data + enc + len(enc).to_bytes(4, 'big')
     def on_attach_clicked(self):
         file_dialog = QFileDialog()
         file_path, _ = file_dialog.getOpenFileName(self, "Выберите файл для отправки")
@@ -1004,7 +1201,7 @@ class MainWindow(QMainWindow):
         progress.close()
 
     def start_client_thread(self):
-        self.client_thread = ClientThread(self.sock, self.username, self.password, self.usb_thread)
+        self.client_thread = ClientThread(self.sock, self.username, self.password, self.usb_thread, self.pending_packets)
         if self.screen_stream:
             self.client_thread.set_screen_stream(self.screen_stream)
         self.client_thread.message_received.connect(self.on_message_received)
@@ -1062,7 +1259,8 @@ class MainWindow(QMainWindow):
         self.screen_stream = None
         dialog = LoginDialog()
         if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.sock, self.username, self.password, screen_stream = dialog.get_socket_and_credentials()
+            self.sock, self.username, self.password, screen_stream, pending_packets = dialog.get_socket_and_credentials()
+            self.pending_packets = pending_packets
             self.start_client_thread()
             if screen_stream:
                 self.client_thread.set_screen_stream(screen_stream)
@@ -1075,8 +1273,11 @@ class MainWindow(QMainWindow):
         safe_filename = html.escape(filename)
         safe_timestamp = html.escape(timestamp)
         safe_chat_type = html.escape(chat_type)
-        safe_to_user = html.escape(self.username)
-        link = f'<a href="download://?filename={safe_filename}&from={safe_from_user}&chat_type={safe_chat_type}&to={safe_to_user}">Скачать</a>&#8203;'
+        if chat_type == "general":
+            safe_to_user = "general"
+        else:
+            safe_to_user = html.escape(self.username)
+        link = f'<a href="download://?filename={safe_filename}&from={safe_from_user}&chat_type={safe_chat_type}&to={safe_to_user}">Скачать</a>'
         msg = f"[{safe_timestamp}] {safe_from_user}: [Файл] {safe_filename} ({filesize} байт) {link}"
         if chat_type == "general":
             self.append_chat_line(self.general_chat.chat_display, msg)
@@ -1109,8 +1310,11 @@ class MainWindow(QMainWindow):
                 timestamp = html.escape(msg.get('timestamp', ''))
                 chat_type = msg.get('chat_type', 'general')
                 safe_chat_type = html.escape(chat_type)
-                safe_to_user = html.escape(self.username)
-                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={safe_chat_type}&to={safe_to_user}">Скачать</a>&#8203;'
+                if chat_type == 'general':
+                    safe_to_user = "general"
+                else:
+                    safe_to_user = html.escape(self.username)
+                link = f'<a href="download://?filename={filename}&from={from_user}&chat_type={safe_chat_type}&to={safe_to_user}">Скачать</a>'
                 line = f"[{timestamp}] {from_user}: [Файл] {filename} ({filesize} байт) {link}"
                 if chat_type == 'general':
                     self.append_chat_line(self.general_chat.chat_display, line)
@@ -1208,8 +1412,8 @@ def main():
     app.setFont(font)
     login_dialog = LoginDialog()
     if login_dialog.exec() == QDialog.DialogCode.Accepted:
-        sock, username, password, screen_stream = login_dialog.get_socket_and_credentials()
-        main_window = MainWindow(sock, username, password, screen_stream)
+        sock, username, password, screen_stream, pending_packets = login_dialog.get_socket_and_credentials()
+        main_window = MainWindow(sock, username, password, screen_stream, pending_packets)
         main_window.show()
         sys.exit(app.exec())
     else:

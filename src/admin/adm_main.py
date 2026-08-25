@@ -586,17 +586,21 @@ class ServerThread(QThread):
                                     total_chunks = (len(plain_data) + chunk_size - 1) // chunk_size
                                     file_id_download = f"download_{int(time.time())}_{from_user}_{filename}"
                                     for i in range(total_chunks):
-                                        data = plain_data[i * chunk_size:(i + 1) * chunk_size]
-                                        data_token = self.transport.encrypt_bytes(data)
-                                        dl_packet = {
-                                            'type': 'file_download_chunk',
-                                            'file_id': file_id_download,
-                                            'filename': filename,
-                                            'chunk_index': i,
-                                            'total_chunks': total_chunks,
-                                            'data': data_token
-                                        }
-                                        send_packet(client_socket, dl_packet)
+                                        try:
+                                            data = plain_data[i * chunk_size:(i + 1) * chunk_size]
+                                            data_token = self.transport.encrypt_bytes(data)
+                                            dl_packet = {
+                                                'type': 'file_download_chunk',
+                                                'file_id': file_id_download,
+                                                'filename': filename,
+                                                'chunk_index': i,
+                                                'total_chunks': total_chunks,
+                                                'data': data_token
+                                            }
+                                            send_packet(client_socket, dl_packet)
+                                            time.sleep(0.001)
+                                        except Exception:
+                                            break
                         elif ptype == 'usb_event':
                             if is_pending:
                                 continue
@@ -910,6 +914,76 @@ class BlockerPasswordDialog(QDialog):
             return None, "Пароль должен содержать не менее 8 символов"
         return pwd1, None
 
+class StegoTab(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.parent_window = parent
+        self.setAcceptDrops(True)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+        hint = QLabel("Перетащите файл сюда или нажмите кнопку")
+        hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        hint.setStyleSheet("color: #8a8a9a; font-size: 16px; padding: 40px;")
+        layout.addWidget(hint)
+        btn = QPushButton("Выбрать файл")
+        btn.setMinimumHeight(45)
+        btn.setStyleSheet("""
+            QPushButton {
+                background-color: #4a6a8a;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 25px;
+                color: white;
+                font-weight: bold;
+                font-size: 15px;
+            }
+            QPushButton:hover { background-color: #5a7a9a; }
+            QPushButton:pressed { background-color: #3a5a7a; }
+        """)
+        btn.clicked.connect(self.load_file)
+        layout.addWidget(btn)
+        self.result = QTextBrowser()
+        self.result.setStyleSheet("""
+            QTextBrowser {
+                background-color: #3d3d4a;
+                border: 1px solid #4a4a5a;
+                border-radius: 6px;
+                padding: 12px;
+                color: #e0e0e0;
+                font-size: 14px;
+            }
+        """)
+        layout.addWidget(self.result)
+        self.setLayout(layout)
+
+    def dragEnterEvent(self, event):
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+
+    def dropEvent(self, event):
+        for url in event.mimeData().urls():
+            if url.isLocalFile():
+                self.analyze(url.toLocalFile())
+                break
+
+    def load_file(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Выбрать файл")
+        if path:
+            self.analyze(path)
+
+    def analyze(self, path):
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+            result = self.parent_window.extract_stego(data)
+            if result:
+                self.result.setText(f"Обнаружена цепочка:\n{result}")
+            else:
+                self.result.setText("Стеганографические метаданные не обнаружены")
+        except Exception as e:
+            self.result.setText(f"Ошибка чтения файла: {e}")
+
 class MainWindow(QMainWindow):
     def __init__(self, server_password, blocker_password_hash):
         super().__init__()
@@ -933,6 +1007,91 @@ class MainWindow(QMainWindow):
             line = f"{username}, {timestamp}: {event}"
             self.append_chat_line(self.usb_display, line)
 
+    def extract_stego(self, data):
+        enc = None
+        if data.startswith(b'\x89PNG\r\n\x1a\n'):
+            i = 8
+            while i < len(data):
+                l = int.from_bytes(data[i:i+4], 'big')
+                t = data[i+4:i+8]
+                if t == b'tEXt':
+                    c = data[i+8:i+8+l]
+                    if c.startswith(b'asterion\x00'):
+                        pb = c[9:]
+                        pl = int.from_bytes(pb[:4], 'big')
+                        enc = pb[4:4+pl].decode('utf-8')
+                        break
+                i += 12 + l
+        elif data.startswith(b'\xff\xd8\xff'):
+            i = 2
+            while i < len(data) - 1:
+                if data[i] == 0xFF and data[i+1] == 0xFE:
+                    l = int.from_bytes(data[i+2:i+4], 'big')
+                    c = data[i+4:i+4+l-2]
+                    if c.startswith(b'asterion\x00'):
+                        pb = c[9:]
+                        pl = int.from_bytes(pb[:4], 'big')
+                        enc = pb[4:4+pl].decode('utf-8')
+                        break
+                elif data[i] == 0xFF and data[i+1] not in (0x00, 0xD9):
+                    l = int.from_bytes(data[i+2:i+4], 'big')
+                    i += 2 + l
+                else:
+                    i += 1
+        elif data.startswith(b'GIF8'):
+            i = 0
+            while i < len(data) - 1:
+                if data[i] == 0x21 and data[i+1] == 0xFE:
+                    i += 2
+                    p = []
+                    while True:
+                        if i >= len(data):
+                            break
+                        s = data[i]
+                        i += 1
+                        if s == 0:
+                            break
+                        p.append(data[i:i+s])
+                        i += s
+                    c = b''.join(p)
+                    if c.startswith(b'asterion\x00'):
+                        pb = c[9:]
+                        pl = int.from_bytes(pb[:4], 'big')
+                        enc = pb[4:4+pl].decode('utf-8')
+                        break
+                i += 1
+        else:
+            try:
+                text = data.decode('utf-8')
+                bits = []
+                for ch in text:
+                    if ch == '\u200b':
+                        bits.append(0)
+                    elif ch == '\u200c':
+                        bits.append(1)
+                if len(bits) >= 32:
+                    l = 0
+                    for i in range(32):
+                        l = (l << 1) | bits[i]
+                    if 0 < l <= (len(bits) - 32) // 8:
+                        eb = bits[32:32+l*8]
+                        bb = bytearray(l)
+                        for i in range(l):
+                            b = 0
+                            for j in range(8):
+                                b = (b << 1) | eb[i*8+j]
+                            bb[i] = b
+                        enc = bytes(bb).decode('utf-8')
+            except:
+                try:
+                    l = int.from_bytes(data[-4:], 'big')
+                    if 0 < l <= len(data) - 4:
+                        enc = data[-(4+l):-4].decode('utf-8')
+                except:
+                    pass
+        if enc:
+            return self.server_thread.transport.decrypt_text(enc)
+        return None
     def append_chat_line(self, chat_display, line):
         cursor = chat_display.textCursor()
         cursor.movePosition(QTextCursor.MoveOperation.End)
@@ -1094,6 +1253,8 @@ class MainWindow(QMainWindow):
         usb_layout.addWidget(self.usb_display)
         self.usb_tab.setLayout(usb_layout)
         self.chat_tabs.addTab(self.usb_tab, "Отслеживание")
+        self.stego_tab = StegoTab(self)
+        self.chat_tabs.addTab(self.stego_tab, "Стеганография")
         right_layout.addWidget(self.chat_tabs)
         main_layout.addWidget(right_panel)
 
