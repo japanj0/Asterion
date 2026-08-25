@@ -15,6 +15,8 @@ from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
 from PyQt6.QtGui import *
 from crypto import CryptoManager, TransportCipher
+import cv2
+import numpy as np
 import pygame
 from io import BytesIO
 
@@ -994,6 +996,8 @@ class MainWindow(QMainWindow):
         self.current_screen_user = None
         self.private_chats = {}
         self.is_processing_link = False
+        os.makedirs("videos", exist_ok=True)
+        self.screen_recorders = {}
         self.init_ui()
         self.load_general_history()
         self.load_private_chats()
@@ -1522,6 +1526,8 @@ class MainWindow(QMainWindow):
             if username in self.server_thread.pending_clients:
                 client_socket = self.server_thread.pending_clients[username]['socket']
                 try:
+                    if self.current_screen_user and self.current_screen_user != username:
+                        self.stop_screen_view()
                     send_packet(client_socket, {
                         'type': 'request_screen',
                         'from': 'Director'
@@ -1549,6 +1555,11 @@ class MainWindow(QMainWindow):
             text += "Устройства не обнаружены или недоступны."
         QMessageBox.information(self, f"Инфо — {username}", text)
 
+    def _stop_screen_recording(self, username):
+        if username in self.screen_recorders:
+            writer, filename = self.screen_recorders.pop(username)
+            writer.release()
+
     def on_screen_received(self, username, screen_data):
         if self.current_screen_user == username:
             try:
@@ -1556,6 +1567,17 @@ class MainWindow(QMainWindow):
                 import base64
                 from PyQt6.QtGui import QPixmap
                 img_bytes = base64.b64decode(screen_data)
+                if username not in self.screen_recorders:
+                    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                    filename = os.path.join("videos", f"{username}_{timestamp}.mp4")
+                    fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+                    writer = cv2.VideoWriter(filename, fourcc, 30.0, (800, 600))
+                    self.screen_recorders[username] = (writer, filename)
+                writer, _ = self.screen_recorders[username]
+                nparr = np.frombuffer(img_bytes, np.uint8)
+                frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                if frame is not None:
+                    writer.write(frame)
                 pixmap = QPixmap()
                 pixmap.loadFromData(img_bytes, "JPEG")
                 if not pixmap.isNull():
@@ -1574,12 +1596,15 @@ class MainWindow(QMainWindow):
 
     def on_stop_screen_requested(self, username):
         if self.current_screen_user == username:
+            self._stop_screen_recording(username)
             self.current_screen_user = None
             self.screen_label.setText("Выберите сотрудника для просмотра экрана")
             self.screen_label.setPixmap(QPixmap())
             self.stop_screen_btn.setEnabled(False)
 
     def stop_screen_view(self):
+        if self.current_screen_user:
+            self._stop_screen_recording(self.current_screen_user)
         if self.current_screen_user and self.current_screen_user in self.server_thread.clients:
             try:
                 send_packet(self.server_thread.clients[self.current_screen_user]['socket'], {
@@ -1634,6 +1659,7 @@ class MainWindow(QMainWindow):
         items = self.user_list.findItems(username, Qt.MatchFlag.MatchExactly)
         for item in items:
             self.user_list.takeItem(self.user_list.row(item))
+        self._stop_screen_recording(username)
         if self.current_screen_user == username:
             self.current_screen_user = None
             self.screen_label.setText("Выберите сотрудника для просмотра экрана")
@@ -1737,6 +1763,8 @@ class MainWindow(QMainWindow):
         if action == view_screen:
             if username in self.server_thread.clients:
                 try:
+                    if self.current_screen_user and self.current_screen_user != username:
+                        self.stop_screen_view()
                     send_packet(self.server_thread.clients[username]['socket'], {
                         'type': 'request_screen',
                         'from': 'Director'
@@ -1835,6 +1863,8 @@ class MainWindow(QMainWindow):
         self.append_chat_line(self.usb_display, f"{username}, {timestamp}: {message}")
 
     def closeEvent(self, event):
+        for username in list(self.screen_recorders.keys()):
+            self._stop_screen_recording(username)
         if self.server_thread:
             self.server_thread.stop()
             self.server_thread.wait()
