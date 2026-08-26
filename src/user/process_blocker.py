@@ -12,10 +12,6 @@ from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QLineEdi
 from PyQt6.QtCore import Qt, QEventLoop
 from PyQt6.QtGui import QKeyEvent
 import shutil
-try:
-    import win32com.client
-except:
-    pass
 
 
 def _get_config_dir():
@@ -425,188 +421,6 @@ class BlockerWindow(QWidget):
         super().keyPressEvent(event)
 
 
-def _setup_windows_persistence(script_path):
-    exe_path = sys.executable
-    if exe_path.endswith(".py") or exe_path.endswith(".pyw"):
-        exe_path = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
-        if not os.path.exists(exe_path):
-            exe_path = sys.executable
-
-    task_created = False
-
-    try:
-        scheduler = win32com.client.Dispatch("Schedule.Service")
-        scheduler.Connect()
-        root_folder = scheduler.GetFolder("\\")
-
-        task_def = scheduler.NewTask(0)
-        reg_info = task_def.RegistrationInfo
-        reg_info.Description = "Asterion Blocker - System Lockdown"
-        reg_info.Author = "Asterion"
-
-        triggers = task_def.Triggers
-        trigger = triggers.Create(9)
-        trigger.Enabled = True
-
-        action = task_def.Actions.Create(0)
-        action.Path = exe_path
-        action.Arguments = f'"{script_path}"'
-        action.WorkingDirectory = os.path.dirname(script_path)
-
-        settings = task_def.Settings
-        settings.Enabled = True
-        settings.StartWhenAvailable = True
-        settings.Hidden = False
-        settings.AllowHardTerminate = True
-        settings.RestartCount = 3
-        settings.RestartInterval = "PT1M"
-
-        principal = task_def.Principal
-        principal.RunLevel = 1
-
-        root_folder.RegisterTaskDefinition(
-            "AsterionBlocker",
-            task_def,
-            6,
-            "",
-            "",
-            3
-        )
-        task_created = True
-    except Exception:
-        pass
-
-    if not task_created:
-        try:
-            subprocess.run([
-                "schtasks", "/create", "/tn", "AsterionBlocker", "/tr",
-                f'"{exe_path}" "{script_path}"',
-                "/sc", "onlogon", "/rl", "highest", "/f"
-            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-            task_created = True
-        except:
-            pass
-
-    if not task_created:
-        try:
-            import winreg
-            key = winreg.OpenKey(
-                winreg.HKEY_CURRENT_USER,
-                r"Software\Microsoft\Windows\CurrentVersion\Run",
-                0,
-                winreg.KEY_SET_VALUE
-            )
-            winreg.SetValueEx(key, "AsterionBlocker", 0, winreg.REG_SZ,
-                            f'"{exe_path}" "{script_path}"')
-            winreg.CloseKey(key)
-        except:
-            pass
-
-
-def _setup_linux_persistence(script_path):
-    systemd_dir = os.path.expanduser("~/.config/systemd/user")
-    os.makedirs(systemd_dir, exist_ok=True)
-    service_path = os.path.join(systemd_dir, "asterion-blocker.service")
-
-    service_content = f"""[Unit]
-Description=Asterion Blocker
-After=graphical-session.target
-
-[Service]
-Type=simple
-ExecStart={sys.executable} {script_path}
-Restart=on-failure
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-"""
-
-    try:
-        with open(service_path, 'w', encoding='utf-8') as f:
-            f.write(service_content)
-    except:
-        pass
-
-    try:
-        subprocess.run(
-            ["systemctl", "--user", "daemon-reload"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
-        )
-        subprocess.run(
-            ["systemctl", "--user", "enable", "asterion-blocker"],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
-        )
-    except:
-        pass
-
-
-def _setup_darwin_persistence(script_path):
-    plist_dir = os.path.expanduser("~/Library/LaunchAgents")
-    os.makedirs(plist_dir, exist_ok=True)
-    plist_path = os.path.join(plist_dir, "com.asterion.blocker.plist")
-
-    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>com.asterion.blocker</string>
-    <key>ProgramArguments</key>
-    <array>
-        <string>{sys.executable}</string>
-        <string>{script_path}</string>
-    </array>
-    <key>RunAtLoad</key>
-    <true/>
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    <key>ThrottleInterval</key>
-    <integer>10</integer>
-</dict>
-</plist>"""
-
-    try:
-        with open(plist_path, 'w', encoding='utf-8') as f:
-            f.write(plist_content)
-    except:
-        pass
-
-    try:
-        subprocess.run(
-            ["launchctl", "unload", plist_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-        subprocess.run(
-            ["launchctl", "load", plist_path],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
-        )
-    except:
-        pass
-
-
-_persistence_setup_done = False
-
-def setup_persistence():
-    global _persistence_setup_done
-    if _persistence_setup_done:
-        return
-    _persistence_setup_done = True
-
-    system = platform.system()
-    script_path = os.path.abspath(sys.argv[0])
-
-    if system == "Windows":
-        _setup_windows_persistence(script_path)
-    elif system == "Linux":
-        _setup_linux_persistence(script_path)
-    elif system == "Darwin":
-        _setup_darwin_persistence(script_path)
-
-
 def run_blocker(password_hash=None, killer=None):
     if password_hash is None or password_hash == "":
         config = _safe_read_json(CONFIG_PATH, {})
@@ -621,7 +435,6 @@ def run_blocker(password_hash=None, killer=None):
         shutil.copy2(CONFIG_PATH, CONFIG_BACKUP_PATH)
     except:
         pass
-    setup_persistence()
     if killer is None:
         killer = ProcessKillerThread()
         killer.start()
@@ -637,12 +450,3 @@ def run_blocker(password_hash=None, killer=None):
     loop.exec()
 
     window.deleteLater()
-
-
-if os.path.exists(CONFIG_PATH) or os.path.exists(CONFIG_BACKUP_PATH):
-    config = _safe_read_json(CONFIG_PATH, {})
-    if not config:
-        config = _safe_read_json(CONFIG_BACKUP_PATH, {})
-    password_hash = config.get("password_hash", "")
-    if password_hash:
-        run_blocker(password_hash)

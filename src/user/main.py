@@ -29,6 +29,196 @@ import ctypes
 
 import ctypes
 import shlex
+import shutil
+try:
+    import win32com.client
+except:
+    pass
+def _setup_windows_persistence(script_path):
+    exe_path = sys.executable
+    if exe_path.endswith(".py") or exe_path.endswith(".pyw"):
+        exe_path = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.exists(exe_path):
+            exe_path = sys.executable
+
+    is_binary = os.path.abspath(sys.executable) == os.path.abspath(script_path)
+    if is_binary:
+        arguments = '--FromPlan'
+    else:
+        arguments = f'--FromPlan "{script_path}"'
+
+    task_created = False
+    try:
+        scheduler = win32com.client.Dispatch("Schedule.Service")
+        scheduler.Connect()
+        root_folder = scheduler.GetFolder("\\")
+        task_def = scheduler.NewTask(0)
+        reg_info = task_def.RegistrationInfo
+        reg_info.Description = "Asterion Blocker - System Lockdown"
+        reg_info.Author = "Asterion"
+        triggers = task_def.Triggers
+        trigger = triggers.Create(9)
+        trigger.Enabled = True
+        action = task_def.Actions.Create(0)
+        action.Path = exe_path
+        action.Arguments = arguments
+        action.WorkingDirectory = os.path.dirname(script_path)
+        settings = task_def.Settings
+        settings.Enabled = True
+        settings.StartWhenAvailable = True
+        settings.Hidden = False
+        settings.AllowHardTerminate = True
+        settings.RestartCount = 3
+        settings.RestartInterval = "PT1M"
+        principal = task_def.Principal
+        principal.RunLevel = 1
+        root_folder.RegisterTaskDefinition(
+            "AsterionBlocker",
+            task_def,
+            6,
+            "",
+            "",
+            3
+        )
+        task_created = True
+    except Exception:
+        pass
+
+    if not task_created:
+        try:
+            subprocess.run([
+                "schtasks", "/create", "/tn", "AsterionBlocker", "/tr",
+                f'"{exe_path}" {arguments}',
+                "/sc", "onlogon", "/rl", "highest", "/f"
+            ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            task_created = True
+        except:
+            pass
+
+    if not task_created:
+        try:
+            import winreg
+            key = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Run",
+                0,
+                winreg.KEY_SET_VALUE
+            )
+            winreg.SetValueEx(key, "AsterionBlocker", 0, winreg.REG_SZ,
+                            f'"{exe_path}" {arguments}')
+            winreg.CloseKey(key)
+        except:
+            pass
+
+
+def _setup_linux_persistence(script_path):
+    systemd_dir = os.path.expanduser("~/.config/systemd/user")
+    os.makedirs(systemd_dir, exist_ok=True)
+    service_path = os.path.join(systemd_dir, "asterion-blocker.service")
+    is_binary = os.path.abspath(sys.executable) == os.path.abspath(script_path)
+    if is_binary:
+        exec_line = f"{script_path} --FromPlan"
+    else:
+        exec_line = f"{sys.executable} {script_path} --FromPlan"
+    service_content = f"""[Unit]
+Description=Asterion Blocker
+After=graphical-session.target
+
+[Service]
+Type=simple
+ExecStart={exec_line}
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=default.target
+"""
+    try:
+        with open(service_path, 'w', encoding='utf-8') as f:
+            f.write(service_content)
+    except:
+        pass
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "daemon-reload"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+        )
+        subprocess.run(
+            ["systemctl", "--user", "enable", "asterion-blocker"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+        )
+    except:
+        pass
+
+
+def _setup_darwin_persistence(script_path):
+    plist_dir = os.path.expanduser("~/Library/LaunchAgents")
+    os.makedirs(plist_dir, exist_ok=True)
+    plist_path = os.path.join(plist_dir, "com.asterion.blocker.plist")
+    is_binary = os.path.abspath(sys.executable) == os.path.abspath(script_path)
+    if is_binary:
+        args_block = f"""    <string>{script_path}</string>
+    <string>--FromPlan</string>"""
+    else:
+        args_block = f"""    <string>{sys.executable}</string>
+    <string>{script_path}</string>
+    <string>--FromPlan</string>"""
+    plist_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.asterion.blocker</string>
+    <key>ProgramArguments</key>
+    <array>
+{args_block}
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>ThrottleInterval</key>
+    <integer>10</integer>
+</dict>
+</plist>"""
+    try:
+        with open(plist_path, 'w', encoding='utf-8') as f:
+            f.write(plist_content)
+    except:
+        pass
+    try:
+        subprocess.run(
+            ["launchctl", "unload", plist_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+        )
+        subprocess.run(
+            ["launchctl", "load", plist_path],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True
+        )
+    except:
+        pass
+
+
+_persistence_setup_done = False
+
+def setup_persistence():
+    global _persistence_setup_done
+    if _persistence_setup_done:
+        return
+    _persistence_setup_done = True
+    system = platform.system()
+    script_path = os.path.abspath(sys.argv[0])
+    if system == "Windows":
+        _setup_windows_persistence(script_path)
+    elif system == "Linux":
+        _setup_linux_persistence(script_path)
+    elif system == "Darwin":
+        _setup_darwin_persistence(script_path)
+
+
 
 def require_admin():
     system = platform.system()
@@ -1419,12 +1609,31 @@ def main():
     else:
         sys.exit(0)
 
-if os.path.exists(process_blocker.CONFIG_PATH):
-    with open(process_blocker.CONFIG_PATH, "r") as f:
-        config = json.load(f)
-        password_hash = config.get("password_hash", "")
-        if password_hash:
-            process_blocker.run_blocker(password_hash)
-            sys.exit()
-require_admin()
-main()
+def _load_blocker_config():
+    for path in [process_blocker.CONFIG_PATH, process_blocker.CONFIG_BACKUP_PATH]:
+        if not os.path.exists(path):
+            continue
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except (json.JSONDecodeError, OSError):
+            continue
+    return {}
+
+is_from_plan = "--FromPlan" in sys.argv
+
+if is_from_plan:
+    config = _load_blocker_config()
+    password_hash = config.get("password_hash", "")
+    if password_hash:
+        process_blocker.run_blocker(password_hash)
+    sys.exit(0)
+else:
+    config = _load_blocker_config()
+    password_hash = config.get("password_hash", "")
+    if password_hash:
+        process_blocker.run_blocker(password_hash)
+        sys.exit()
+    require_admin()
+    setup_persistence()
+    main()
