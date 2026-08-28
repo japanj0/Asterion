@@ -9,7 +9,7 @@ import threading
 import time
 import psutil
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton
-from PyQt6.QtCore import Qt, QEventLoop
+from PyQt6.QtCore import Qt, QEventLoop, QTimer
 from PyQt6.QtGui import QKeyEvent
 import shutil
 
@@ -379,15 +379,29 @@ class BlockerWindow(QWidget):
 
         self.setLayout(layout)
 
+        self._top_timer = QTimer(self)
+        self._top_timer.timeout.connect(self._force_top)
+
+    def _force_top(self):
+        self.raise_()
+        self.activateWindow()
+        self.showFullScreen()
+        self.pass_input.setFocus()
+
     def showEvent(self, event):
         super().showEvent(event)
         self.activateWindow()
         self.raise_()
         self.pass_input.setFocus()
+        self._top_timer.start(100)
+
+    def closeEvent(self, event):
+        event.ignore()
 
     def check_password(self):
         entered = self.pass_input.text().strip()
         if hashlib.sha256(entered.encode("utf-8")).hexdigest() == self.password_hash:
+            self._top_timer.stop()
             if os.path.exists(CONFIG_PATH):
                 try:
                     os.remove(CONFIG_PATH)
