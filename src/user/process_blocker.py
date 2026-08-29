@@ -8,6 +8,7 @@ import tempfile
 import threading
 import time
 import psutil
+import ctypes
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton
 from PyQt6.QtCore import Qt, QEventLoop, QTimer
 from PyQt6.QtGui import QKeyEvent
@@ -66,6 +67,16 @@ def _safe_read_json(path, default=None):
         except (json.JSONDecodeError, OSError):
             continue
     return default
+
+
+def _hard_exit():
+    try:
+        if platform.system() == "Windows":
+            ctypes.windll.kernel32.ExitProcess(0)
+        else:
+            os.kill(os.getpid(), 9)
+    except:
+        os._exit(1)
 
 
 class ProcessKillerThread(threading.Thread):
@@ -374,7 +385,7 @@ class BlockerWindow(QWidget):
         layout.addWidget(self.pass_input)
 
         btn = QPushButton("РАЗБЛОКИРОВАТЬ")
-        btn.clicked.connect(self.check_password)
+        btn.pressed.connect(self.check_password)
         layout.addWidget(btn)
 
         self.setLayout(layout)
@@ -385,7 +396,6 @@ class BlockerWindow(QWidget):
     def _force_top(self):
         self.raise_()
         self.activateWindow()
-        self.showFullScreen()
         self.pass_input.setFocus()
 
     def showEvent(self, event):
@@ -393,15 +403,16 @@ class BlockerWindow(QWidget):
         self.activateWindow()
         self.raise_()
         self.pass_input.setFocus()
-        self._top_timer.start(100)
+        self._top_timer.start(500)
 
     def closeEvent(self, event):
         event.ignore()
 
     def check_password(self):
+        self._top_timer.stop()
+        self.setEnabled(False)
         entered = self.pass_input.text().strip()
         if hashlib.sha256(entered.encode("utf-8")).hexdigest() == self.password_hash:
-            self._top_timer.stop()
             if os.path.exists(CONFIG_PATH):
                 try:
                     os.remove(CONFIG_PATH)
@@ -416,12 +427,13 @@ class BlockerWindow(QWidget):
                 self.killer.stop()
             if self.loop and self.loop.isRunning():
                 self.loop.quit()
-            self.close()
-            sys.exit()
+            _hard_exit()
         else:
             self.pass_input.clear()
             self.pass_input.setPlaceholderText("Неверный пароль")
             self.pass_input.setFocus()
+            self.setEnabled(True)
+            self._top_timer.start(500)
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Escape:
