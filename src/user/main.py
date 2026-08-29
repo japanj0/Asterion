@@ -115,11 +115,17 @@ def _setup_linux_persistence(script_path):
     systemd_dir = os.path.expanduser("~/.config/systemd/user")
     os.makedirs(systemd_dir, exist_ok=True)
     service_path = os.path.join(systemd_dir, "asterion-blocker.service")
-    is_binary = os.path.abspath(sys.executable) == os.path.abspath(script_path)
-    if is_binary:
-        exec_line = f"{script_path} --FromPlan"
+
+    appimage_path = os.environ.get("APPIMAGE", "")
+    if appimage_path and os.path.exists(appimage_path):
+        exec_line = f"{appimage_path} --appimage-extract-and-run --FromPlan"
     else:
-        exec_line = f"{sys.executable} {script_path} --FromPlan"
+        is_binary = os.path.abspath(sys.executable) == os.path.abspath(script_path)
+        if is_binary:
+            exec_line = f"{script_path} --FromPlan"
+        else:
+            exec_line = f"{sys.executable} {script_path} --FromPlan"
+
     service_content = f"""[Unit]
 Description=Asterion Blocker
 After=graphical-session.target
