@@ -153,6 +153,15 @@ class DatabaseManager:
                     timestamp TEXT
                 )
             ''')
+            self.cursor.execute('''
+                CREATE TABLE IF NOT EXISTS system_events (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_type TEXT,
+                    username TEXT,
+                    details TEXT,
+                    timestamp TEXT
+                )
+            ''')
             self.conn.commit()
 
     def save_message(self, chat_type, from_user, to_user, encrypted_message):
@@ -253,6 +262,23 @@ class DatabaseManager:
             )
             return self.cursor.fetchall()
 
+    def save_system_event(self, event_type, username, details=""):
+        with self.lock:
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            self.cursor.execute(
+                "INSERT INTO system_events (event_type, username, details, timestamp) VALUES (?, ?, ?, ?)",
+                (event_type, username, details, timestamp)
+            )
+            self.conn.commit()
+
+    def get_system_events(self, limit=1000):
+        with self.lock:
+            self.cursor.execute(
+                "SELECT event_type, username, details, timestamp FROM system_events ORDER BY timestamp DESC LIMIT ?",
+                (limit,)
+            )
+            return self.cursor.fetchall()
+
     def get_all_users_with_private_chat(self):
         with self.lock:
             self.cursor.execute(
@@ -309,6 +335,8 @@ class ServerThread(QThread):
         self._conn_history = {}
         self._tcp_history = {}
         self.blocker_password_hash = None
+        self.allow_self_block = False
+
 
     def run(self):
         if not os.path.exists("admin/server.crt") or not os.path.exists("admin/server.key"):
@@ -328,6 +356,12 @@ class ServerThread(QThread):
                     time.sleep(0.1)
                     continue
                 client_socket, addr = self.server.accept()
+                if not self.running:
+                    try:
+                        client_socket.close()
+                    except:
+                        pass
+                    break
                 client_ip = addr[0]
                 if client_ip in self.blocked_ips:
                     client_socket.close()
@@ -402,6 +436,38 @@ class ServerThread(QThread):
                 continue
             except Exception:
                 break
+
+    def stop(self):
+        self.running = False
+        for client in self.clients.values():
+            try:
+                client['socket'].close()
+            except:
+                pass
+        for client in self.pending_clients.values():
+            try:
+                client['socket'].close()
+            except:
+                pass
+        try:
+            self.server.close()
+        except:
+            pass
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(('127.0.0.1', self.port))
+            s.close()
+        except:
+            pass
+
+    def closeEvent(self, event):
+        for username in list(self.screen_recorders.keys()):
+            self._stop_screen_recording(username)
+        if self.server_thread:
+            self.server_thread.stop()
+            self.server_thread.wait(3000)
+        event.accept()
     def _heartbeat_loop(self):
         while self.running:
             time.sleep(self.heartbeat_interval)
@@ -654,7 +720,8 @@ class ServerThread(QThread):
             try:
                 send_packet(client_socket, {
                     'type': 'approved',
-                    'blocker_hash': self.blocker_password_hash
+                    'blocker_hash': self.blocker_password_hash,
+                    'allow_self_block': self.allow_self_block
                 })
             except:
                 pass
@@ -986,11 +1053,49 @@ class StegoTab(QWidget):
         except Exception as e:
             self.result.setText(f"Ошибка чтения файла: {e}")
 
+class SelfBlockDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Asterion - Самоблокировка")
+        self.setFixedSize(500, 250)
+        self.setStyleSheet("""
+            QDialog { background-color: #2d2d3a; }
+            QLabel { color: white; font-size: 16px; }
+            QPushButton {
+                background-color: #4a6a8a;
+                border: none;
+                border-radius: 6px;
+                padding: 12px 30px;
+                color: white;
+                font-weight: bold;
+                font-size: 15px;
+            }
+            QPushButton:hover { background-color: #5a7a9a; }
+            QPushButton:pressed { background-color: #3a5a7a; }
+        """)
+        layout = QVBoxLayout()
+        layout.setContentsMargins(30, 30, 30, 30)
+        layout.setSpacing(20)
+        label = QLabel("Хотите ли вы, чтобы пользователь мог\nвключать блокировщик себе сам?")
+        label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(label)
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(15)
+        self.yes_btn = QPushButton("Да")
+        self.no_btn = QPushButton("Нет")
+        self.yes_btn.clicked.connect(lambda: self.done(1))
+        self.no_btn.clicked.connect(lambda: self.done(0))
+        btn_layout.addWidget(self.yes_btn)
+        btn_layout.addWidget(self.no_btn)
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
 class MainWindow(QMainWindow):
-    def __init__(self, server_password, blocker_password_hash):
+    def __init__(self, server_password, blocker_password_hash, allow_self_block=False):
         super().__init__()
         self.server_password = server_password
         self.blocker_password_hash = blocker_password_hash
+        self.allow_self_block = allow_self_block
         self.server_thread = None
         self.current_chat = "general"
         self.current_screen_user = None
@@ -1001,51 +1106,82 @@ class MainWindow(QMainWindow):
         self.init_ui()
         self.load_general_history()
         self.load_private_chats()
-        self.load_usb_history()
+        self.load_tracking_history()
+        self.last_known_users = set()
+        self._user_watchdog = QTimer()
+        self._user_watchdog.timeout.connect(self._check_user_array)
+        self._user_watchdog.start(3000)
         self.start_server()
 
-    def load_usb_history(self):
-        events = db.get_usb_events(limit=1000)
+    def load_tracking_history(self):
         self.usb_display.clear()
-        for username, event, timestamp in reversed(events):
-            line = f"{username}, {timestamp}: {event}"
+        events = []
+        for username, event, timestamp in db.get_usb_events(limit=500):
+            events.append((timestamp, f"[USB] {username}, {timestamp}: {event}"))
+        for event_type, username, details, timestamp in db.get_system_events(limit=500):
+            if event_type == "connect":
+                events.append((timestamp, f"[СЕТЬ] {timestamp}: Пользователь {username} подключился к чату"))
+            elif event_type == "disconnect":
+                line = f"[СЕТЬ] {timestamp}: Пользователь {username} отключился от чата"
+                if details:
+                    line += f" ({details})"
+                events.append((timestamp, line))
+        events.sort(key=lambda x: x[0])
+        for _, line in events:
             self.append_chat_line(self.usb_display, line)
+
+    def _check_user_array(self):
+        if not self.server_thread:
+            return
+        current = set(self.server_thread.clients.keys())
+        if current == self.last_known_users:
+            return
+        new_users = current - self.last_known_users
+        left_users = self.last_known_users - current
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for u in new_users:
+            db.save_system_event("connect", u)
+            self.append_chat_line(self.usb_display, f"[СЕТЬ] {timestamp}: Пользователь {u} подключился к чату")
+        for u in left_users:
+            db.save_system_event("disconnect", u, "возможно несанкционированное отключение ")
+            self.append_chat_line(self.usb_display, f"[СЕТЬ] {timestamp}: Пользователь {u} отключился от чата (возможно несанкционированное отключение или самоблокировка)")
+        self.last_known_users = current
 
     def extract_stego(self, data):
         enc = None
         if data.startswith(b'\x89PNG\r\n\x1a\n'):
             i = 8
             while i < len(data):
-                l = int.from_bytes(data[i:i+4], 'big')
-                t = data[i+4:i+8]
+                l = int.from_bytes(data[i:i + 4], 'big')
+                t = data[i + 4:i + 8]
                 if t == b'tEXt':
-                    c = data[i+8:i+8+l]
+                    c = data[i + 8:i + 8 + l]
                     if c.startswith(b'asterion\x00'):
                         pb = c[9:]
                         pl = int.from_bytes(pb[:4], 'big')
-                        enc = pb[4:4+pl].decode('utf-8')
+                        enc = pb[4:4 + pl].decode('utf-8')
                         break
                 i += 12 + l
         elif data.startswith(b'\xff\xd8\xff'):
             i = 2
             while i < len(data) - 1:
-                if data[i] == 0xFF and data[i+1] == 0xFE:
-                    l = int.from_bytes(data[i+2:i+4], 'big')
-                    c = data[i+4:i+4+l-2]
+                if data[i] == 0xFF and data[i + 1] == 0xFE:
+                    l = int.from_bytes(data[i + 2:i + 4], 'big')
+                    c = data[i + 4:i + 4 + l - 2]
                     if c.startswith(b'asterion\x00'):
                         pb = c[9:]
                         pl = int.from_bytes(pb[:4], 'big')
-                        enc = pb[4:4+pl].decode('utf-8')
+                        enc = pb[4:4 + pl].decode('utf-8')
                         break
-                elif data[i] == 0xFF and data[i+1] not in (0x00, 0xD9):
-                    l = int.from_bytes(data[i+2:i+4], 'big')
+                elif data[i] == 0xFF and data[i + 1] not in (0x00, 0xD9):
+                    l = int.from_bytes(data[i + 2:i + 4], 'big')
                     i += 2 + l
                 else:
                     i += 1
         elif data.startswith(b'GIF8'):
             i = 0
             while i < len(data) - 1:
-                if data[i] == 0x21 and data[i+1] == 0xFE:
+                if data[i] == 0x21 and data[i + 1] == 0xFE:
                     i += 2
                     p = []
                     while True:
@@ -1055,13 +1191,13 @@ class MainWindow(QMainWindow):
                         i += 1
                         if s == 0:
                             break
-                        p.append(data[i:i+s])
+                        p.append(data[i:i + s])
                         i += s
                     c = b''.join(p)
                     if c.startswith(b'asterion\x00'):
                         pb = c[9:]
                         pl = int.from_bytes(pb[:4], 'big')
-                        enc = pb[4:4+pl].decode('utf-8')
+                        enc = pb[4:4 + pl].decode('utf-8')
                         break
                 i += 1
         else:
@@ -1078,23 +1214,45 @@ class MainWindow(QMainWindow):
                     for i in range(32):
                         l = (l << 1) | bits[i]
                     if 0 < l <= (len(bits) - 32) // 8:
-                        eb = bits[32:32+l*8]
+                        eb = bits[32:32 + l * 8]
                         bb = bytearray(l)
                         for i in range(l):
                             b = 0
                             for j in range(8):
-                                b = (b << 1) | eb[i*8+j]
+                                b = (b << 1) | eb[i * 8 + j]
                             bb[i] = b
                         enc = bytes(bb).decode('utf-8')
             except:
                 try:
                     l = int.from_bytes(data[-4:], 'big')
                     if 0 < l <= len(data) - 4:
-                        enc = data[-(4+l):-4].decode('utf-8')
+                        enc = data[-(4 + l):-4].decode('utf-8')
                 except:
                     pass
         if enc:
-            return self.server_thread.transport.decrypt_text(enc)
+            try:
+                decrypted = self.server_thread.transport.decrypt_text(enc)
+                if decrypted:
+                    entries = [e.strip() for e in decrypted.split('->')]
+                    formatted = []
+                    for entry in entries:
+                        if '|' in entry:
+                            time_str, username = entry.split('|', 1)
+                            try:
+                                dt = datetime.strptime(time_str.strip(), "%Y-%m-%d %H:%M:%S")
+                                formatted.append(f"[{dt.strftime('%d.%m.%Y %H:%M')}] {username.strip()}")
+                            except:
+                                formatted.append(f"[{time_str}] {username.strip()}")
+                        else:
+                            formatted.append(entry)
+                    result = "История скачиваний:\n\n"
+                    result += "\n".join(formatted)
+                    result += "\n\nкол-во: " + str(len(formatted))
+                    return result
+                else:
+                    return "Ничего не найдено либо файл поломан"
+            except Exception as e:
+                return f"Decryption error {str(e)}"
         return None
     def append_chat_line(self, chat_display, line):
         cursor = chat_display.textCursor()
@@ -1488,6 +1646,7 @@ class MainWindow(QMainWindow):
     def start_server(self):
         self.server_thread = ServerThread(self.server_password)
         self.server_thread.blocker_password_hash = self.blocker_password_hash
+        self.server_thread.allow_self_block = self.allow_self_block
         self.server_thread.message_received.connect(self.on_message_received)
         self.server_thread.user_connected.connect(self.on_user_connected)
         self.server_thread.user_disconnected.connect(self.on_user_disconnected)
@@ -1622,6 +1781,7 @@ class MainWindow(QMainWindow):
         pass
 
     def on_user_connected(self, username):
+        self._check_user_array()
         self.user_list.addItem(username)
         self.on_pending_user_removed(username)
         if username not in self.private_chats:
@@ -1656,6 +1816,7 @@ class MainWindow(QMainWindow):
         self.server_thread.send_history(username)
 
     def on_user_disconnected(self, username):
+        self._check_user_array()
         items = self.user_list.findItems(username, Qt.MatchFlag.MatchExactly)
         for item in items:
             self.user_list.takeItem(self.user_list.row(item))
@@ -1911,7 +2072,10 @@ def main():
     QMessageBox.information(None, "Пароль для входа сотрудников",
                              f"Сотрудники должны вводить для входа: {login_password}")
 
-    window = MainWindow(login_password, hash_password(blocker_password))
+    self_block_dialog = SelfBlockDialog()
+    allow_self_block = self_block_dialog.exec() == 1
+
+    window = MainWindow(login_password, hash_password(blocker_password), allow_self_block)
     window.show()
     sys.exit(app.exec())
 

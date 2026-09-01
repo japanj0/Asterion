@@ -25,8 +25,7 @@ from usbmonitor import USBMonitor
 from usbmonitor.attributes import ID_MODEL, ID_MODEL_ID, ID_VENDOR_ID
 import subprocess
 import tempfile
-import ctypes
-
+import zlib
 import ctypes
 import shlex
 import shutil
@@ -408,7 +407,7 @@ class USBMonitorThread(QThread):
         self.running = False
 
 class AuthThread(QThread):
-    auth_success = pyqtSignal(object, str, str, object, list)
+    auth_success = pyqtSignal(object, str, str, object, list, bool)
     auth_failed = pyqtSignal(str)
     connection_error = pyqtSignal(str)
     pending_status = pyqtSignal()
@@ -505,9 +504,10 @@ class AuthThread(QThread):
 
                     if approved_pkt is not None:
                         blocker_hash = approved_pkt.get('blocker_hash', '')
+                        allow_self_block = approved_pkt.get('allow_self_block', False)
                         path = os.path.join(process_blocker.CONFIG_DIR, "blocker_config.json")
                         process_blocker._atomic_write_json(path, {"password_hash": blocker_hash})
-                        self.auth_success.emit(ssl_sock, self.username, self.password, self.screen_stream, pending_packets)
+                        self.auth_success.emit(ssl_sock, self.username, self.password, self.screen_stream, pending_packets, allow_self_block)
                         return
 
                 except socket.timeout:
@@ -723,6 +723,7 @@ class LoginDialog(QDialog):
         self.socket = None
         self.screen_stream = None
         self.pending_packets = []
+        self.allow_self_block = False
         self.init_ui()
 
     def init_ui(self):
@@ -829,12 +830,13 @@ class LoginDialog(QDialog):
         self.status_label.setText("Ожидание одобрения администратором...")
         self.status_label.show()
 
-    def on_auth_success(self, sock, username, password, screen_stream, pending_packets):
+    def on_auth_success(self, sock, username, password, screen_stream, pending_packets, allow_self_block):
         self.socket = sock
         self.username = username
         self.password = password
         self.screen_stream = screen_stream
         self.pending_packets = pending_packets
+        self.allow_self_block = allow_self_block
         self.accept()
 
     def on_auth_failed(self, error):
@@ -852,10 +854,10 @@ class LoginDialog(QDialog):
         sys.exit(1)
 
     def get_socket_and_credentials(self):
-        return self.socket, self.username, self.password, self.screen_stream, self.pending_packets
+        return self.socket, self.username, self.password, self.screen_stream, self.pending_packets, self.allow_self_block
 
 class MainWindow(QMainWindow):
-    def __init__(self, sock, username, password, screen_stream=None, pending_packets=None):
+    def __init__(self, sock, username, password, screen_stream=None, pending_packets=None, allow_self_block=False):
         super().__init__()
         self.sock = sock
         self.username = username
@@ -872,6 +874,7 @@ class MainWindow(QMainWindow):
             self.screen_stream.stop_stream()
             self.screen_stream = None
         self.pending_packets = pending_packets or []
+        self.allow_self_block = allow_self_block
         self.init_ui()
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
         self.usb_thread = USBMonitorThread()
@@ -949,6 +952,17 @@ class MainWindow(QMainWindow):
             QTabBar::tab:hover {
                 background-color: #5a5a6a;
             }
+            QTabBar::tab:last {
+                background-color: #5a2a2a;
+                color: #ffcccc;
+            }
+            QTabBar::tab:last:selected {
+                background-color: #c0392b;
+                color: white;
+            }
+            QTabBar::tab:last:hover {
+                background-color: #922b21;
+            }
         """)
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -962,6 +976,34 @@ class MainWindow(QMainWindow):
         self.chat_tabs.addTab(self.general_chat, "Общий чат")
         self.private_chat = self.create_chat_widget()
         self.chat_tabs.addTab(self.private_chat, "Чат с Директором")
+        if self.allow_self_block:
+            self.kill_tab = QWidget()
+            kill_layout = QVBoxLayout()
+            kill_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            kill_btn = QPushButton("УБИТЬ ПРИЛОЖЕНИЕ")
+            kill_btn.setFixedSize(400, 100)
+            kill_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #c0392b;
+                    border: 2px solid #922b21;
+                    border-radius: 8px;
+                    color: #ffffff;
+                    font-size: 24px;
+                    font-weight: bold;
+                    letter-spacing: 2px;
+                }
+                QPushButton:hover {
+                    background-color: #e74c3c;
+                    border: 2px solid #c0392b;
+                }
+                QPushButton:pressed {
+                    background-color: #922b21;
+                }
+            """)
+            kill_btn.clicked.connect(self.on_block_access)
+            kill_layout.addWidget(kill_btn)
+            self.kill_tab.setLayout(kill_layout)
+            self.chat_tabs.addTab(self.kill_tab, "УБИТЬ")
         layout.addWidget(self.chat_tabs)
 
     def create_chat_widget(self):
@@ -1142,16 +1184,17 @@ class MainWindow(QMainWindow):
                         del self.download_buffers[save_path]
 
     def embed_stego(self, data):
-        chain = self.username
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        chain = f"{timestamp}|{self.username}"
         try:
             old_enc = None
             if data.startswith(b'\x89PNG\r\n\x1a\n'):
                 i = 8
                 while i < len(data):
-                    l = int.from_bytes(data[i:i+4], 'big')
-                    t = data[i+4:i+8]
+                    l = int.from_bytes(data[i:i + 4], 'big')
+                    t = data[i + 4:i + 8]
                     if t == b'tEXt':
-                        c = data[i+8:i+8+l]
+                        c = data[i + 8:i + 8 + l]
                         if c.startswith(b'asterion\x00'):
                             old_enc = c[9:].decode('utf-8')
                             break
@@ -1159,21 +1202,21 @@ class MainWindow(QMainWindow):
             elif data.startswith(b'\xff\xd8\xff'):
                 i = 2
                 while i < len(data) - 1:
-                    if data[i] == 0xFF and data[i+1] == 0xFE:
-                        l = int.from_bytes(data[i+2:i+4], 'big')
-                        c = data[i+4:i+4+l-2]
+                    if data[i] == 0xFF and data[i + 1] == 0xFE:
+                        l = int.from_bytes(data[i + 2:i + 4], 'big')
+                        c = data[i + 4:i + 4 + l - 2]
                         if c.startswith(b'asterion\x00'):
                             old_enc = c[9:].decode('utf-8')
                             break
-                    elif data[i] == 0xFF and data[i+1] not in (0x00, 0xD9):
-                        l = int.from_bytes(data[i+2:i+4], 'big')
+                    elif data[i] == 0xFF and data[i + 1] not in (0x00, 0xD9):
+                        l = int.from_bytes(data[i + 2:i + 4], 'big')
                         i += 2 + l
                     else:
                         i += 1
             elif data.startswith(b'GIF8'):
                 i = 0
                 while i < len(data) - 1:
-                    if data[i] == 0x21 and data[i+1] == 0xFE:
+                    if data[i] == 0x21 and data[i + 1] == 0xFE:
                         i += 2
                         p = []
                         while True:
@@ -1183,7 +1226,7 @@ class MainWindow(QMainWindow):
                             i += 1
                             if s == 0:
                                 break
-                            p.append(data[i:i+s])
+                            p.append(data[i:i + s])
                             i += s
                         c = b''.join(p)
                         if c.startswith(b'asterion\x00'):
@@ -1204,19 +1247,19 @@ class MainWindow(QMainWindow):
                         for i in range(32):
                             l = (l << 1) | bits[i]
                         if 0 < l <= (len(bits) - 32) // 8:
-                            eb = bits[32:32+l*8]
+                            eb = bits[32:32 + l * 8]
                             bb = bytearray(l)
                             for i in range(l):
                                 b = 0
                                 for j in range(8):
-                                    b = (b << 1) | eb[i*8+j]
+                                    b = (b << 1) | eb[i * 8 + j]
                                 bb[i] = b
                             old_enc = bytes(bb).decode('utf-8')
                 except:
                     try:
                         l = int.from_bytes(data[-4:], 'big')
                         if 0 < l <= len(data) - 4:
-                            enc_data = data[-(4+l):-4]
+                            enc_data = data[-(4 + l):-4]
                             test = self.client_thread.transport.decrypt_text(enc_data.decode('utf-8'))
                             if test and not test.startswith('['):
                                 old_enc = enc_data.decode('utf-8')
@@ -1225,7 +1268,7 @@ class MainWindow(QMainWindow):
             if old_enc:
                 old = self.client_thread.transport.decrypt_text(old_enc)
                 if old and not old.startswith('['):
-                    chain = old + '_' + self.username
+                    chain = old + ' -> ' + chain
         except:
             pass
         try:
@@ -1234,14 +1277,13 @@ class MainWindow(QMainWindow):
         except:
             return data
         if data.startswith(b'\x89PNG\r\n\x1a\n'):
-            import zlib
             sig = data[:8]
             chunks = []
             i = 8
             while i < len(data):
-                l = int.from_bytes(data[i:i+4], 'big')
-                t = data[i+4:i+8]
-                c = data[i+8:i+8+l]
+                l = int.from_bytes(data[i:i + 4], 'big')
+                t = data[i + 4:i + 8]
+                c = data[i + 8:i + 8 + l]
                 if t == b'tEXt' and c.startswith(b'asterion\x00'):
                     i += 12 + l
                     continue
@@ -1250,7 +1292,7 @@ class MainWindow(QMainWindow):
                     tl = len(td)
                     tc = zlib.crc32(b'tEXt' + td) & 0xffffffff
                     chunks.append(tl.to_bytes(4, 'big') + b'tEXt' + td + tc.to_bytes(4, 'big'))
-                chunks.append(data[i:i+12+l])
+                chunks.append(data[i:i + 12 + l])
                 i += 12 + l
             return sig + b''.join(chunks)
         elif data.startswith(b'\xff\xd8\xff'):
@@ -1265,7 +1307,7 @@ class MainWindow(QMainWindow):
             blocks = []
             o = 0
             while o < len(marked):
-                ch = marked[o:o+255]
+                ch = marked[o:o + 255]
                 blocks.append(bytes([len(ch)]) + ch)
                 o += 255
             ext = b'\x21\xfe' + b''.join(blocks) + b'\x00'
@@ -1313,10 +1355,10 @@ class MainWindow(QMainWindow):
                 try:
                     l = int.from_bytes(data[-4:], 'big')
                     if 0 < l < len(data) - 4:
-                        enc_data = data[-(4+l):-4]
+                        enc_data = data[-(4 + l):-4]
                         test = self.client_thread.transport.decrypt_text(enc_data.decode('utf-8'))
                         if test and not test.startswith('['):
-                            data = data[:-(4+l)]
+                            data = data[:-(4 + l)]
                 except:
                     pass
                 return data + enc + len(enc).to_bytes(4, 'big')
@@ -1444,25 +1486,40 @@ class MainWindow(QMainWindow):
         self.reconnect()
 
     def reconnect(self):
-        self.general_chat.chat_display.clear()
-        self.private_chat.chat_display.clear()
-        while self.chat_tabs.count() > 2:
-            self.chat_tabs.removeTab(self.chat_tabs.count() - 1)
-        if hasattr(self, 'download_progress') and self.download_progress:
-            self.download_progress.close()
-            self.download_progress = None
-        self.download_buffers = {}
-        self.screen_stream = None
-        dialog = LoginDialog()
-        if dialog.exec() == QDialog.DialogCode.Accepted:
-            self.sock, self.username, self.password, screen_stream, pending_packets = dialog.get_socket_and_credentials()
-            self.pending_packets = pending_packets
-            self.start_client_thread()
-            if screen_stream:
-                self.client_thread.set_screen_stream(screen_stream)
-        else:
-            QApplication.quit()
-
+        while self.chat_tabs.count() > 0:
+            self.chat_tabs.removeTab(0)
+        self.general_chat = self.create_chat_widget()
+        self.chat_tabs.addTab(self.general_chat, "Общий чат")
+        self.private_chat = self.create_chat_widget()
+        self.chat_tabs.addTab(self.private_chat, "Чат с Директором")
+        if self.allow_self_block:
+            self.kill_tab = QWidget()
+            kill_layout = QVBoxLayout()
+            kill_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            kill_btn = QPushButton("УБИТЬ ПРИЛОЖЕНИЕ")
+            kill_btn.setFixedSize(400, 100)
+            kill_btn.setStyleSheet("""
+                QPushButton {
+                    background-color: #c0392b;
+                    border: 2px solid #922b21;
+                    border-radius: 8px;
+                    color: #ffffff;
+                    font-size: 24px;
+                    font-weight: bold;
+                    letter-spacing: 2px;
+                }
+                QPushButton:hover {
+                    background-color: #e74c3c;
+                    border: 2px solid #c0392b;
+                }
+                QPushButton:pressed {
+                    background-color: #922b21;
+                }
+            """)
+            kill_btn.clicked.connect(self.on_block_access)
+            kill_layout.addWidget(kill_btn)
+            self.kill_tab.setLayout(kill_layout)
+            self.chat_tabs.addTab(self.kill_tab, "УБИТЬ")
     def on_file_notify_received(self, from_user, filename, chat_type, filesize, timestamp):
         play_alert_sound()
         safe_from_user = html.escape(from_user)
@@ -1608,8 +1665,8 @@ def main():
     app.setFont(font)
     login_dialog = LoginDialog()
     if login_dialog.exec() == QDialog.DialogCode.Accepted:
-        sock, username, password, screen_stream, pending_packets = login_dialog.get_socket_and_credentials()
-        main_window = MainWindow(sock, username, password, screen_stream, pending_packets)
+        sock, username, password, screen_stream, pending_packets, allow_self_block = login_dialog.get_socket_and_credentials()
+        main_window = MainWindow(sock, username, password, screen_stream, pending_packets, allow_self_block)
         main_window.show()
         sys.exit(app.exec())
     else:
