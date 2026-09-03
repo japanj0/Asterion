@@ -2069,9 +2069,6 @@ def main():
         QMessageBox.critical(None, "Ошибка", str(e))
         sys.exit(1)
 
-    QMessageBox.information(None, "Пароль для входа сотрудников",
-                             f"Сотрудники должны вводить для входа: {login_password}")
-
     self_block_dialog = SelfBlockDialog()
     allow_self_block = self_block_dialog.exec() == 1
 
