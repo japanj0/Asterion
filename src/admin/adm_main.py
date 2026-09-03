@@ -1781,6 +1781,7 @@ class MainWindow(QMainWindow):
         pass
 
     def on_user_connected(self, username):
+        play_alert_sound()
         self._check_user_array()
         self.user_list.addItem(username)
         self.on_pending_user_removed(username)
@@ -1816,6 +1817,7 @@ class MainWindow(QMainWindow):
         self.server_thread.send_history(username)
 
     def on_user_disconnected(self, username):
+        play_alert_sound()
         self._check_user_array()
         items = self.user_list.findItems(username, Qt.MatchFlag.MatchExactly)
         for item in items:
