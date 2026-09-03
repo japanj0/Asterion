@@ -891,7 +891,7 @@ class MainWindow(QMainWindow):
         with self.client_thread._last_seen_lock:
             last = self.client_thread.last_seen
         if time.time() - last > 30:
-            self._watchdog_timer.stop()
+
             self.on_block_access()
 
     def init_ui(self):
@@ -1454,6 +1454,7 @@ class MainWindow(QMainWindow):
         self.client_thread.start()
 
     def on_block_access(self):
+        self._watchdog_timer.stop()
         if hasattr(self, 'usb_thread') and self.usb_thread:
             self.usb_thread.stop()
             self.usb_thread.wait()
@@ -1481,45 +1482,6 @@ class MainWindow(QMainWindow):
         self.hide()
 
         process_blocker.run_blocker()
-
-        self.show()
-        self.reconnect()
-
-    def reconnect(self):
-        while self.chat_tabs.count() > 0:
-            self.chat_tabs.removeTab(0)
-        self.general_chat = self.create_chat_widget()
-        self.chat_tabs.addTab(self.general_chat, "Общий чат")
-        self.private_chat = self.create_chat_widget()
-        self.chat_tabs.addTab(self.private_chat, "Чат с Директором")
-        if self.allow_self_block:
-            self.kill_tab = QWidget()
-            kill_layout = QVBoxLayout()
-            kill_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            kill_btn = QPushButton("УБИТЬ ПРИЛОЖЕНИЕ")
-            kill_btn.setFixedSize(400, 100)
-            kill_btn.setStyleSheet("""
-                QPushButton {
-                    background-color: #c0392b;
-                    border: 2px solid #922b21;
-                    border-radius: 8px;
-                    color: #ffffff;
-                    font-size: 24px;
-                    font-weight: bold;
-                    letter-spacing: 2px;
-                }
-                QPushButton:hover {
-                    background-color: #e74c3c;
-                    border: 2px solid #c0392b;
-                }
-                QPushButton:pressed {
-                    background-color: #922b21;
-                }
-            """)
-            kill_btn.clicked.connect(self.on_block_access)
-            kill_layout.addWidget(kill_btn)
-            self.kill_tab.setLayout(kill_layout)
-            self.chat_tabs.addTab(self.kill_tab, "УБИТЬ")
     def on_file_notify_received(self, from_user, filename, chat_type, filesize, timestamp):
         play_alert_sound()
         safe_from_user = html.escape(from_user)
