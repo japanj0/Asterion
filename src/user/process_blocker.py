@@ -3,7 +3,6 @@ import os
 import json
 import hashlib
 import platform
-import subprocess
 import tempfile
 import threading
 import time
@@ -11,7 +10,6 @@ import psutil
 import ctypes
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout, QLabel, QLineEdit, QPushButton
 from PyQt6.QtCore import Qt, QEventLoop, QTimer
-from PyQt6.QtGui import QKeyEvent
 import shutil
 
 

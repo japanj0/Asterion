@@ -8,7 +8,6 @@ import socket
 import hashlib
 import time
 import base64
-import shutil
 import html
 from datetime import datetime
 from PyQt6.QtWidgets import *
@@ -291,6 +290,49 @@ class DatabaseManager:
             )
             return [row[0] for row in self.cursor.fetchall()]
 
+    def get_tracking_users(self):
+        with self.lock:
+            self.cursor.execute(
+                "SELECT DISTINCT username FROM usb_events"
+            )
+            users = set(row[0] for row in self.cursor.fetchall())
+            self.cursor.execute(
+                "SELECT DISTINCT username FROM system_events"
+            )
+            users.update(row[0] for row in self.cursor.fetchall())
+            return sorted(users)
+
+    def get_tracking_events_for_users(self, usernames, limit=100000):
+        with self.lock:
+            users_sql = ", ".join("?" for _ in usernames)
+            events = []
+            self.cursor.execute(
+                f"SELECT username, event, timestamp FROM usb_events WHERE username IN ({users_sql}) ORDER BY timestamp",
+                tuple(usernames)
+            )
+            for username, event, timestamp in self.cursor.fetchall():
+                events.append((timestamp, username, f"[USB] {username}, {timestamp}: {event}"))
+            self.cursor.execute(
+                f"SELECT event_type, username, details, timestamp FROM system_events WHERE username IN ({users_sql}) ORDER BY timestamp",
+                tuple(usernames)
+            )
+            for event_type, username, details, timestamp in self.cursor.fetchall():
+                if event_type == "connect":
+                    line = f"[СЕТЬ] {timestamp}: Пользователь {username} подключился к чату"
+                elif event_type == "disconnect":
+                    line = f"[СЕТЬ] {timestamp}: Пользователь {username} отключился от чата"
+                    if details:
+                        line += f" ({details})"
+                elif event_type == "app_open":
+                    line = f"[ПРИЛОЖЕНИЕ] {timestamp}: Пользователь {username} открыл {details}"
+                elif event_type == "stego_copy":
+                    line = f"[СТЕГО] {timestamp}: Пользователь {username} {details}"
+                else:
+                    line = f"[{event_type}] {timestamp}: Пользователь {username} {details}"
+                events.append((timestamp, username, line))
+            events.sort(key=lambda x: x[0])
+            return [line for _, _, line in events]
+
     def get_file_by_name_and_sender(self, filename, from_user, to_user, chat_type):
         with self.lock:
             self.cursor.execute(
@@ -313,6 +355,8 @@ class ServerThread(QThread):
     pending_user_removed = pyqtSignal(str)
     usb_event_received = pyqtSignal(str, str, str)
     usb_info_response_received = pyqtSignal(str, list)
+    app_event_received = pyqtSignal(str, str, str)
+    stego_event_received = pyqtSignal(str, str, str)
 
     def __init__(self, server_password, port=5555):
         super().__init__()
@@ -450,6 +494,10 @@ class ServerThread(QThread):
             except:
                 pass
         try:
+            self.server.shutdown(socket.SHUT_RDWR)
+        except:
+            pass
+        try:
             self.server.close()
         except:
             pass
@@ -461,13 +509,6 @@ class ServerThread(QThread):
         except:
             pass
 
-    def closeEvent(self, event):
-        for username in list(self.screen_recorders.keys()):
-            self._stop_screen_recording(username)
-        if self.server_thread:
-            self.server_thread.stop()
-            self.server_thread.wait(3000)
-        event.accept()
     def _heartbeat_loop(self):
         while self.running:
             time.sleep(self.heartbeat_interval)
@@ -495,7 +536,8 @@ class ServerThread(QThread):
         ALLOWED_TYPES = {
             'message', 'screen', 'stop_screen',
             'file_start', 'file_chunk', 'file_end', 'file_request',
-            'usb_event', 'usb_info_response', 'pong'
+            'usb_event', 'usb_info_response', 'pong',
+            'app_event', 'stego_event'
         }
         try:
             while self.running:
@@ -685,6 +727,22 @@ class ServerThread(QThread):
                             except Exception:
                                 devices = []
                             self.usb_info_response_received.emit(username, devices)
+                        elif ptype == 'app_event':
+                            if is_pending:
+                                continue
+                            encrypted_data = packet.get('data')
+                            decrypted = self.transport.decrypt_text(encrypted_data)
+                            db.save_system_event('app_open', username, decrypted)
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            self.app_event_received.emit(username, timestamp, decrypted)
+                        elif ptype == 'stego_event':
+                            if is_pending:
+                                continue
+                            encrypted_data = packet.get('data')
+                            decrypted = self.transport.decrypt_text(encrypted_data)
+                            db.save_system_event('stego_copy', username, decrypted)
+                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            self.stego_event_received.emit(username, timestamp, decrypted)
                         elif ptype == 'pong':
                             pass
                     except Exception:
@@ -796,23 +854,6 @@ class ServerThread(QThread):
                     })
             except:
                 pass
-
-    def stop(self):
-        self.running = False
-        for client in self.clients.values():
-            try:
-                client['socket'].close()
-            except:
-                pass
-        for client in self.pending_clients.values():
-            try:
-                client['socket'].close()
-            except:
-                pass
-        try:
-            self.server.close()
-        except:
-            pass
 
 class IpDisplayWidget(QWidget):
     def __init__(self, parent=None):
@@ -1053,6 +1094,103 @@ class StegoTab(QWidget):
         except Exception as e:
             self.result.setText(f"Ошибка чтения файла: {e}")
 
+class ExportUsersDialog(QDialog):
+    def __init__(self, users, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Asterion - Экспорт логов")
+        self.setMinimumSize(420, 480)
+        self.selected_users = []
+        self.setStyleSheet('''
+            QDialog { background-color: #2d2d3a; }
+            QLabel { color: white; font-size: 15px; }
+            QListWidget {
+                background-color: #3d3d4a;
+                border: 1px solid #4a4a5a;
+                border-radius: 6px;
+                color: #e0e0e0;
+                font-size: 14px;
+                padding: 5px;
+            }
+            QListWidget::item {
+                padding: 8px 4px;
+                border-bottom: 1px solid #4a4a5a;
+            }
+            QListWidget::item:selected { background-color: #4a6a8a; }
+            QListWidget::item:hover { background-color: #4a4a5a; }
+            QCheckBox { color: #e0e0e0; font-size: 14px; spacing: 10px; }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 4px;
+                border: 1px solid #5a5a6a;
+                background-color: #3d3d4a;
+            }
+            QCheckBox::indicator:checked { background-color: #4a9a4a; border: 1px solid #4a9a4a; }
+            QPushButton {
+                background-color: #4a6a8a;
+                border: none;
+                border-radius: 6px;
+                padding: 10px 25px;
+                color: white;
+                font-weight: bold;
+                font-size: 14px;
+            }
+            QPushButton:hover { background-color: #5a7a9a; }
+            QPushButton:pressed { background-color: #3a5a7a; }
+            QPushButton#cancelBtn {
+                background-color: #5a4a4a;
+            }
+            QPushButton#cancelBtn:hover { background-color: #6a5a5a; }
+        ''')
+        layout = QVBoxLayout()
+        layout.setContentsMargins(25, 25, 25, 25)
+        layout.setSpacing(15)
+        title_label = QLabel("Выберите пользователей")
+        title_label.setStyleSheet("font-size: 20px; font-weight: bold; color: #4a9a4a;")
+        layout.addWidget(title_label)
+        sub_label = QLabel("Логи выбранных пользователей будут сохранены в TXT-файл")
+        sub_label.setStyleSheet("font-size: 13px; color: #8a8a9a;")
+        layout.addWidget(sub_label)
+        self.select_all_cb = QCheckBox("Выбрать всех")
+        self.select_all_cb.stateChanged.connect(self._toggle_all)
+        layout.addWidget(self.select_all_cb)
+        self.list_widget = QListWidget()
+        for user in users:
+            item = QListWidgetItem(user)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Unchecked)
+            self.list_widget.addItem(item)
+        layout.addWidget(self.list_widget, 1)
+        btn_layout = QHBoxLayout()
+        btn_layout.setSpacing(12)
+        cancel_btn = QPushButton("Отмена")
+        cancel_btn.setObjectName("cancelBtn")
+        cancel_btn.clicked.connect(self.reject)
+        export_btn = QPushButton("Экспортировать")
+        export_btn.clicked.connect(self._export)
+        btn_layout.addStretch()
+        btn_layout.addWidget(cancel_btn)
+        btn_layout.addWidget(export_btn)
+        layout.addLayout(btn_layout)
+        self.setLayout(layout)
+
+    def _toggle_all(self, state):
+        check = Qt.CheckState.Checked if state == Qt.CheckState.Checked.value else Qt.CheckState.Unchecked
+        for i in range(self.list_widget.count()):
+            self.list_widget.item(i).setCheckState(check)
+
+    def _export(self):
+        self.selected_users = []
+        for i in range(self.list_widget.count()):
+            item = self.list_widget.item(i)
+            if item.checkState() == Qt.CheckState.Checked:
+                self.selected_users.append(item.text())
+        if not self.selected_users:
+            QMessageBox.warning(self, "Ошибка", "Выберите хотя бы одного пользователя")
+            return
+        self.accept()
+
+
 class SelfBlockDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -1126,6 +1264,10 @@ class MainWindow(QMainWindow):
                 if details:
                     line += f" ({details})"
                 events.append((timestamp, line))
+            elif event_type == "app_open":
+                events.append((timestamp, f"[ПРИЛОЖЕНИЕ] {timestamp}: Пользователь {username} открыл {details}"))
+            elif event_type == "stego_copy":
+                events.append((timestamp, f"[СТЕГО] {timestamp}: Пользователь {username} {details}"))
         events.sort(key=lambda x: x[0])
         for _, line in events:
             self.append_chat_line(self.usb_display, line)
@@ -1400,6 +1542,29 @@ class MainWindow(QMainWindow):
         self.chat_tabs.addTab(self.screen_tab, "Просмотр экрана")
         self.usb_tab = QWidget()
         usb_layout = QVBoxLayout()
+        usb_layout.setContentsMargins(0, 0, 0, 0)
+        usb_layout.setSpacing(8)
+        usb_header_layout = QHBoxLayout()
+        usb_header_layout.setContentsMargins(10, 10, 10, 0)
+        usb_header_layout.setSpacing(8)
+        usb_header_layout.addStretch()
+        self.export_logs_btn = QPushButton("Экспорт логов")
+        self.export_logs_btn.setStyleSheet('''
+            QPushButton {
+                background-color: #4a6a8a;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 18px;
+                color: white;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover { background-color: #5a7a9a; }
+            QPushButton:pressed { background-color: #3a5a7a; }
+        ''')
+        self.export_logs_btn.clicked.connect(self.export_tracking_logs)
+        usb_header_layout.addWidget(self.export_logs_btn)
+        usb_layout.addLayout(usb_header_layout)
         self.usb_display = QTextBrowser()
         self.usb_display.setOpenExternalLinks(False)
         self.usb_display.setStyleSheet("""
@@ -1658,6 +1823,8 @@ class MainWindow(QMainWindow):
         self.server_thread.pending_user_removed.connect(self.on_pending_user_removed)
         self.server_thread.usb_event_received.connect(self.on_usb_event)
         self.server_thread.usb_info_response_received.connect(self.on_usb_info_response)
+        self.server_thread.app_event_received.connect(self.on_app_event)
+        self.server_thread.stego_event_received.connect(self.on_stego_event)
         self.server_thread.start()
 
     def on_pending_user_connected(self, username):
@@ -2021,6 +2188,64 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "Ошибка", f"Не удалось отправить уведомление {username}")
 
+    def export_tracking_logs(self):
+        try:
+            users = db.get_tracking_users()
+            if not users:
+                QMessageBox.information(self, "Экспорт логов", "Нет пользователей с событиями в журнале отслеживания")
+                return
+            dialog = ExportUsersDialog(users, self)
+            if dialog.exec() != QDialog.DialogCode.Accepted:
+                return
+            selected = dialog.selected_users
+            if not selected:
+                return
+            lines = db.get_tracking_events_for_users(selected)
+            if not lines:
+                QMessageBox.information(self, "Экспорт логов", "Для выбранных пользователей события не найдены")
+                return
+            report_date = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            txt_lines = [
+                "=" * 70,
+                "ASTERION - Журнал отслеживания",
+                f"Дата формирования: {report_date}",
+                f"Пользователи: {', '.join(selected)}",
+                f"Количество записей: {len(lines)}",
+                "=" * 70,
+                "",
+            ]
+            txt_lines.extend(lines)
+            txt_content = "\n".join(txt_lines)
+            default_name = f"tracking_logs_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+            if getattr(sys, 'frozen', False):
+                default_dir = os.path.join(os.path.dirname(sys.executable), default_name)
+            else:
+                default_dir = os.path.join(os.getcwd(), default_name)
+            save_path, _ = QFileDialog.getSaveFileName(
+                self, "Сохранить логи", default_dir, "Текстовые файлы (*.txt)"
+            )
+            if not save_path:
+                return
+            if not save_path.lower().endswith(".txt"):
+                save_path += ".txt"
+            try:
+                with open(save_path, "w", encoding="utf-8") as f:
+                    f.write(txt_content)
+            except OSError as e:
+                QMessageBox.critical(self, "Ошибка", f"Не удалось сохранить файл: {str(e)}")
+                return
+            QMessageBox.information(self, "Экспорт логов", f"Логи сохранены:\n{save_path}")
+        except Exception as e:
+            QMessageBox.critical(self, "Ошибка", f"Произошла ошибка при экспорте: {str(e)}")
+
+    def on_app_event(self, username, timestamp, app_name):
+        play_alert_sound()
+        self.append_chat_line(self.usb_display, f"[ПРИЛОЖЕНИЕ] {username}, {timestamp}: открыл {app_name}")
+
+    def on_stego_event(self, username, timestamp, info):
+        play_alert_sound()
+        self.append_chat_line(self.usb_display, f"[СТЕГО] {username}, {timestamp}: {info}")
+
     def on_usb_event(self, username, timestamp, message):
         play_alert_sound()
         self.append_chat_line(self.usb_display, f"{username}, {timestamp}: {message}")
@@ -2030,7 +2255,9 @@ class MainWindow(QMainWindow):
             self._stop_screen_recording(username)
         if self.server_thread:
             self.server_thread.stop()
-            self.server_thread.wait()
+            if not self.server_thread.wait(5000):
+                self.server_thread.terminate()
+                self.server_thread.wait(1000)
         event.accept()
 
 def main():

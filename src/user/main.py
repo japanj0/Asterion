@@ -9,7 +9,6 @@ import time
 import base64
 import os
 import platform
-import psutil
 from datetime import datetime
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -24,11 +23,9 @@ from io import BytesIO
 from usbmonitor import USBMonitor
 from usbmonitor.attributes import ID_MODEL, ID_MODEL_ID, ID_VENDOR_ID
 import subprocess
-import tempfile
 import zlib
 import ctypes
 import shlex
-import shutil
 try:
     import win32com.client
 except:
@@ -704,6 +701,32 @@ class ClientThread(QThread):
                 return False
         return False
 
+    def send_app_event(self, app_name):
+        if self.socket:
+            try:
+                packet = {
+                    'type': 'app_event',
+                    'data': self.transport.encrypt_text(app_name)
+                }
+                send_packet(self.socket, packet)
+                return True
+            except:
+                return False
+        return False
+
+    def send_stego_event(self, info):
+        if self.socket:
+            try:
+                packet = {
+                    'type': 'stego_event',
+                    'data': self.transport.encrypt_text(info)
+                }
+                send_packet(self.socket, packet)
+                return True
+            except:
+                return False
+        return False
+
     def stop(self):
         self.running = False
         if self.socket:
@@ -875,6 +898,11 @@ class MainWindow(QMainWindow):
             self.screen_stream = None
         self.pending_packets = pending_packets or []
         self.allow_self_block = allow_self_block
+        self._last_window_title = ''
+        self._app_timer = QTimer(self)
+        self._app_timer.timeout.connect(self._check_active_app)
+        self._app_timer.start(3000)
+        QApplication.clipboard().dataChanged.connect(self._on_clipboard)
         self.init_ui()
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowCloseButtonHint)
         self.usb_thread = USBMonitorThread()
@@ -1362,6 +1390,126 @@ class MainWindow(QMainWindow):
                 except:
                     pass
                 return data + enc + len(enc).to_bytes(4, 'big')
+    def _get_active_window(self):
+        system = platform.system()
+        if system == 'Windows':
+            try:
+                hwnd = ctypes.windll.user32.GetForegroundWindow()
+                length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+                buf = ctypes.create_unicode_buffer(length + 1)
+                ctypes.windll.user32.GetWindowTextW(hwnd, buf, length + 1)
+                return buf.value
+            except:
+                return ''
+        elif system == 'Linux':
+            try:
+                out = subprocess.check_output(['xdotool', 'getactivewindow', 'getwindowname'], stderr=subprocess.DEVNULL, timeout=1).decode().strip()
+                return out
+            except:
+                return ''
+        elif system == 'Darwin':
+            try:
+                out = subprocess.check_output(['osascript', '-e', 'tell application "System Events" to get name of first application process whose frontmost is true'], stderr=subprocess.DEVNULL, timeout=1).decode().strip()
+                return out
+            except:
+                return ''
+        return ''
+
+    def _check_active_app(self):
+        try:
+            title = self._get_active_window()
+            if title and title != self._last_window_title:
+                self._last_window_title = title
+                if self.client_thread:
+                    self.client_thread.send_app_event(title)
+        except:
+            pass
+
+    def _has_stego(self, data):
+        if data.startswith(b'\x89PNG\r\n\x1a\n'):
+            i = 8
+            while i < len(data):
+                l = int.from_bytes(data[i:i+4], 'big')
+                t = data[i+4:i+8]
+                if t == b'tEXt' and i+8+l <= len(data):
+                    if data[i+8:i+16] == b'asterion':
+                        return True
+                i += 12 + l
+        elif data.startswith(b'\xff\xd8\xff'):
+            i = 2
+            while i < len(data)-1:
+                if data[i] == 0xFF and data[i+1] == 0xFE:
+                    l = int.from_bytes(data[i+2:i+4], 'big')
+                    if i+4+l-2 <= len(data) and data[i+4:i+12] == b'asterion':
+                        return True
+                    i += 2 + l
+                elif data[i] == 0xFF and data[i+1] not in (0x00, 0xD9):
+                    l = int.from_bytes(data[i+2:i+4], 'big')
+                    i += 2 + l
+                else:
+                    i += 1
+        elif data.startswith(b'GIF8'):
+            i = 0
+            while i < len(data)-1:
+                if data[i] == 0x21 and data[i+1] == 0xFE:
+                    i += 2
+                    p = []
+                    while i < len(data):
+                        s = data[i]
+                        i += 1
+                        if s == 0:
+                            break
+                        p.append(data[i:i+s])
+                        i += s
+                    c = b''.join(p)
+                    if c.startswith(b'asterion'):
+                        return True
+                i += 1
+        else:
+            try:
+                text = data.decode('utf-8')
+                if '\u200b' in text or '\u200c' in text:
+                    bits = []
+                    for ch in text:
+                        if ch == '\u200b':
+                            bits.append(0)
+                        elif ch == '\u200c':
+                            bits.append(1)
+                    if len(bits) >= 32:
+                        l = 0
+                        for i in range(32):
+                            l = (l << 1) | bits[i]
+                        if 0 < l <= (len(bits)-32)//8:
+                            return True
+            except:
+                pass
+            try:
+                l = int.from_bytes(data[-4:], 'big')
+                if 0 < l <= len(data)-4:
+                    return True
+            except:
+                pass
+        return False
+
+    def _on_clipboard(self):
+        try:
+            clipboard = QApplication.clipboard()
+            mime = clipboard.mimeData()
+            if mime.hasUrls():
+                for url in mime.urls():
+                    if url.isLocalFile():
+                        path = url.toLocalFile()
+                        try:
+                            with open(path, 'rb') as f:
+                                data = f.read(1024*1024)
+                            if self._has_stego(data):
+                                if self.client_thread:
+                                    self.client_thread.send_stego_event(f'clipboard: {path}')
+                        except:
+                            pass
+        except:
+            pass
+
     def on_attach_clicked(self):
         file_dialog = QFileDialog()
         file_path, _ = file_dialog.getOpenFileName(self, "Выберите файл для отправки")
