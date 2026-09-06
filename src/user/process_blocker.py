@@ -107,7 +107,7 @@ class ProcessKillerThread(threading.Thread):
             "wscript.exe", "cscript.exe", "mshta.exe"
         }
         self.whitelist_linux = {
-            "Xorg", "Xwayland", "gnome-shell", "kwin_x11", "kwin_wayland", "plasmashell",
+            "Xorg", "Xorg.wrap", "gdm-x-session", "gnome-session-b", "gnome-session-binary", "Xwayland", "gnome-shell", "kwin_x11", "kwin_wayland", "plasmashell",
             "xfwm4", "mutter", "cinnamon", "budgie-wm", "i3", "sway", "dwm", "awesome",
             "openbox", "fluxbox", "jwm", "pekwm", "icewm", "lxqt-panel", "lxpanel",
             "mate-panel", "cinnamon-panel", "gnome-keyring-daemon", "kded5", "kded6",
@@ -167,7 +167,7 @@ class ProcessKillerThread(threading.Thread):
             "python", "login", "sshd", "fish", "tcsh", "csh", "ksh", "dash", "nu", "xonsh",
             "elvish", "nushell"
         }
-        self.system_paths_linux = ("/usr/sbin/", "/sbin/", "/usr/lib/", "/lib/", "/usr/libexec/")
+        self.system_paths_linux = ("/usr/sbin/", "/sbin/", "/usr/lib/", "/lib/", "/usr/libexec/", "/usr/bin/")
         self.system_paths_darwin = ("/System/", "/usr/sbin/", "/sbin/", "/usr/libexec/", "/usr/lib/")
 
     def _get_ancestors(self):
