@@ -2373,6 +2373,8 @@ class MainWindow(QMainWindow):
 
 
     def closeEvent(self, event):
+        db.conn.commit()
+        db.conn.close()
         def _hard_exit():
             try:
                 if platform.system() == "Windows":
