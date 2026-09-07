@@ -5,7 +5,7 @@
 
 ### Операционная система(рекомендованная)
 - **Windows** 10/11
-- **Linux** (Ubuntu 26.04; Arch (снэпшот от 30 августа 2026, ядро - 7.1.5))
+- **Linux** (Ubuntu 26.04; Arch (снэпшот от 30 августа 2026, ядро - 7.1.5)) - Xorg(X11) only
 
 ### Аппаратное обеспечение
 
@@ -37,6 +37,10 @@
 8. **Отправка администратором экстренных уведомлений** на ПК сотрудников (QMessageBox)
 
 9. **Возможность загрузки журнала аудита действий определенных пользователей**
+ 
+10. **Тотальное логирование действий пользователя**
+
+11. **Возможность Авто-бана по ключевым словам** - блокировка компьютера, если пользователь попытается открыть тот или иной запрещенный информационный ресурс или приложение
 
 ## Сфера применения 
 1. **Корпоративный контроль сотрудников**
@@ -127,8 +131,7 @@ chmod +x названиеAPPIMAGE.appimage
 <b>Инструкция:</b><br><br>
     
 1. Установите Distrobox:<br>
-<b>Ubuntu/Debian:</b> <code>sudo apt install distrobox</code><br>
-<b>Fedora:</b> <code>sudo dnf install distrobox</code><br>
+<b>Ubuntu:</b> <code>sudo apt install distrobox</code><br>
 <b>Arch:</b> <code>sudo pacman -S distrobox</code><br><br>
 
 2. Создайте контейнер с фиксированной версией Arch Linux:<br>
@@ -148,6 +151,27 @@ chmod +x названиеAPPIMAGE.appimage
 Контейнер полностью изолирован от основной системы, поэтому любые конфликты библиотек и версий GCC не повлияют на его работу.</td>
   </tr>
 </table>
+
+<table>
+  <tr>
+    <td style="color: red; font-weight: bold;">Вопрос:</td>
+    <td>Что делать, если у меня по умолчанию стоит Wayland, а мне нужно накатить Xorg и чтобы он корректно запускался?</td>
+  </tr>
+  <tr>
+    <td style="color: blue; font-weight: bold;">Ответ:</td>
+    <td>Установите Xorg и пакет сессии X11 для вашего окружения, чтобы в экране входа появился выбор графического сервера.<br><br>
+<b>Инструкция для Ubuntu:</b><br>
+1. <code>sudo apt update && sudo apt install xorg -y</code><br>
+2. Для KDE Plasma: <code>sudo apt install plasma-session-x11 -y</code><br><br>
+<b>Инструкция для Arch Linux:</b><br>
+1. <code>sudo pacman -Syu xorg-server</code><br>
+2. Для KDE Plasma: <code>sudo pacman -S plasma-workspace-x11</code><br><br>
+<b>Запуск:</b><br>
+1. Перезагрузите ПК: <code>sudo reboot</code><br>
+2. На экране входа нажмите на шестеренку и выберите сессию <b>"Plasma (X11)"</b> или <b>"GNOME на Xorg"</b>.</td>
+  </tr>
+</table>
+
 
 ### Зависимости 
 ```bash
