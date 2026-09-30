@@ -773,6 +773,7 @@ class ServerThread(QThread):
             self.pending_user_removed.emit(username)
 
     def approve_user(self, username):
+
         if username in self.pending_clients:
             client_info = self.pending_clients[username]
             client_socket = client_info['socket']
@@ -1958,6 +1959,10 @@ class MainWindow(QMainWindow):
         info_action = menu.addAction("Инфо")
         action = menu.exec(QCursor.pos())
         if action == approve_action:
+            try:
+                self.stop_screen_view()
+            except:
+                pass
             self.server_thread.approve_user(username)
         elif action == reject_action:
             self.server_thread.reject_user(username)
