@@ -8,6 +8,7 @@ import socket
 import hashlib
 import time
 import base64
+import math
 import html
 from datetime import datetime
 from PyQt6.QtWidgets import *
@@ -457,7 +458,7 @@ class ServerThread(QThread):
                     ssl_sock.close()
                     continue
                 if password == self.server_password_hash:
-                    if username in self.approved_users or username.lower() == "director":
+                    if username.lower() == "director":
                         send_packet(ssl_sock, {'status': 'flag{0ff_th3_wa11}'})
                         ssl_sock.close()
                     else:
@@ -551,7 +552,7 @@ class ServerThread(QThread):
                     now = time.time()
                     packet_times = [t for t in packet_times if now - t < 1]
                     packet_times.append(now)
-                    if len(packet_times) > 50:
+                    if len(packet_times)>100:
                         return
                     ptype = packet.get('type')
                     if ptype not in ALLOWED_TYPES:
@@ -1525,7 +1526,7 @@ class MainWindow(QMainWindow):
                 safe_ts = html.escape(ts)
                 display_name = "Я" if from_user == "Director" else safe_from
                 link = f'<a href="download://?filename={safe_filename}&from={safe_from}&chat_type=private&to={html.escape(username)}">Скачать</a>'
-                combined.append((ts, f"[{safe_ts}] {display_name}: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;"))
+                combined.append((ts, f"[{safe_ts}] {display_name}: [Файл] {safe_filename} ({(filesize/1024/1024)} Мб) {link}&#8203;"))
             combined.sort(key=lambda x: x[0])
             for _, line in combined:
                 self.append_chat_line(chat_widget.chat_display, line)
@@ -1722,7 +1723,7 @@ class MainWindow(QMainWindow):
             safe_ts = html.escape(ts)
             display_name = "Я" if from_user == "Director" else safe_from
             link = f'<a href="download://?filename={safe_filename}&from={safe_from}&chat_type=general&to=general">Скачать</a>'
-            combined.append((ts, f"[{safe_ts}] {display_name}: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;"))
+            combined.append((ts, f"[{safe_ts}] {display_name}: [Файл] {safe_filename} ({math.ceil(filesize/1024/1024)} Мб) {link}&#8203;"))
         combined.sort(key=lambda x: x[0])
         for _, line in combined:
             self.append_chat_line(self.general_chat.chat_display, line)
@@ -1863,8 +1864,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Запрещённый тип файла")
             return
         filesize = os.path.getsize(file_path)
-        if filesize > 500 * 1024 * 1024:
-            QMessageBox.warning(self, "Ошибка", "Файл превышает 500 МБ")
+        if filesize > 10 * 1024 * 1024:
+            QMessageBox.warning(self, "Ошибка", "Файл превышает 10 МБ")
             return
         current_tab = self.chat_tabs.currentWidget()
         tab_text = self.chat_tabs.tabText(self.chat_tabs.currentIndex())
@@ -1892,10 +1893,10 @@ class MainWindow(QMainWindow):
             safe_chat_type = html.escape(chat_type)
             link = f'<a href="download://?filename={safe_filename}&from=Director&chat_type={safe_chat_type}&to={safe_to_user}">Скачать</a>'
             if chat_type == "general":
-                self.append_chat_line(self.general_chat.chat_display, f"[{safe_timestamp}] Я: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;")
+                self.append_chat_line(self.general_chat.chat_display, f"[{safe_timestamp}] Я: [Файл] {safe_filename} ({math.ceil(filesize/1024/1024)} Мб) {link}&#8203;")
             else:
                 if to_user in self.private_chats:
-                    self.append_chat_line(self.private_chats[to_user].chat_display, f"[{safe_timestamp}] Я: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;")
+                    self.append_chat_line(self.private_chats[to_user].chat_display, f"[{safe_timestamp}] Я: [Файл] {safe_filename} ({math.ceil(filesize/1024/1024)} Мб) {link}&#8203;")
             notify_data = {
                 'type': 'file_notify',
                 'from': 'Director',
@@ -2089,7 +2090,7 @@ class MainWindow(QMainWindow):
                 safe_ts = html.escape(ts)
                 display_name = "Я" if from_user == "Director" else safe_from
                 link = f'<a href="download://?filename={safe_filename}&from={safe_from}&chat_type=private&to={html.escape(username)}">Скачать</a>'
-                combined.append((ts, f"[{safe_ts}] {display_name}: [Файл] {safe_filename} ({filesize} байт) {link}&#8203;"))
+                combined.append((ts, f"[{safe_ts}] {display_name}: [Файл] {safe_filename} ({math.ceil(filesize/1024/1024)} Мб) {link}&#8203;"))
             combined.sort(key=lambda x: x[0])
             for _, line in combined:
                 self.append_chat_line(chat_widget.chat_display, line)
@@ -2116,7 +2117,7 @@ class MainWindow(QMainWindow):
         safe_to = html.escape(to_user)
         safe_chat_type = html.escape(chat_type)
         link = f'<a href="download://?filename={safe_filename}&from={safe_from}&chat_type={safe_chat_type}&to={safe_to}">Скачать</a>&#8203;'
-        line = f"[{safe_timestamp}] {safe_from}: [Файл] {safe_filename} ({filesize} байт) {link}"
+        line = f"[{safe_timestamp}] {safe_from}: [Файл] {safe_filename} ({math.ceil(filesize/1024/1024)} Мб) {link}"
         if chat_type == "general":
             self.append_chat_line(self.general_chat.chat_display, line)
         else:

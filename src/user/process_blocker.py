@@ -135,7 +135,8 @@ class ProcessKillerThread(threading.Thread):
             "sh", "bash", "dash", "zsh", "fish", "ksh", "tcsh", "csh", "ash", "hush", "yash",
             "rc", "es", "scsh", "xonsh", "nu", "elvish", "oil", "oh", "ngs", "murex", "nushell",
             "pwsh", "powershell", "cmd", "explorer.exe", "cmd.exe", "conhost.exe", "init",
-            "appimaged", "AppImageLauncher", "fuse-overlayfs", "fusermount", "snapfuse"
+            "appimaged", "AppImageLauncher", "fuse-overlayfs", "fusermount", "snapfuse",
+            "VBoxClient", "VBoxService", "vboxadd-x11", "vboxvideo", "vboxguest", "VBoxDRMClient"
         }
         self.whitelist_darwin = {
             "WindowServer", "loginwindow", "Dock", "Finder", "SystemUIServer", "Spotlight",

@@ -8,6 +8,7 @@ import ssl
 import time
 import base64
 import os
+import math
 import platform
 from datetime import datetime
 from PyQt6.QtWidgets import *
@@ -1522,8 +1523,8 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Ошибка", "Запрещённый тип файла")
             return
         filesize = os.path.getsize(file_path)
-        if filesize > 500 * 1024 * 1024:
-            QMessageBox.warning(self, "Ошибка", "Файл превышает 500 МБ")
+        if filesize > 10 * 1024 * 1024:
+            QMessageBox.warning(self, "Ошибка", "Файл превышает 10 МБ")
             return
         current_tab = self.chat_tabs.currentWidget()
         tab_text = self.chat_tabs.tabText(self.chat_tabs.currentIndex())
@@ -1641,7 +1642,7 @@ class MainWindow(QMainWindow):
         else:
             safe_to_user = html.escape(self.username)
         link = f'<a href="download://?filename={safe_filename}&from={safe_from_user}&chat_type={safe_chat_type}&to={safe_to_user}">Скачать</a>'
-        msg = f"[{safe_timestamp}] {safe_from_user}: [Файл] {safe_filename} ({filesize} байт) {link}"
+        msg = f"[{safe_timestamp}] {safe_from_user}: [Файл] {safe_filename} ({math.ceil(filesize/1024/1024)} Мб) {link}"
         if chat_type == "general":
             self.append_chat_line(self.general_chat.chat_display, msg)
         else:
